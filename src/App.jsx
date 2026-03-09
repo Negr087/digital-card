@@ -50,6 +50,19 @@ async function fetchFromNostr(npub) {
   };
 }
 
+async function resolveNip05(identifier) {
+  const [name, domain] = identifier.split('@');
+  if (!name || !domain) return null;
+  try {
+    const res = await fetch(`https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(name)}`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.names?.[name] || null; // hex pubkey
+  } catch {
+    return null;
+  }
+}
+
 async function fetchOwnNostrProfile() {
   if (!window.nostr) throw new Error('No se detectó extensión Nostr. Instalá Alby o nos2x.');
   const ndk = await getNDK();
@@ -1206,28 +1219,41 @@ function SearchView({ onCardFound, onBack }) {
         card = await fetchFromNostr(npub);
         if (!card) throw new Error('No se encontró tarjeta para ese npub');
       } else if (q.includes('@')) {
-        // Lightning Address — intentar obtener perfil Nostr via LNURL metadata
-        const ln = new LightningAddress(q);
-        await ln.fetch();
-        let nostrCard = null;
-        if (ln.lnurlData?.allowsNostr && ln.lnurlData?.nostrPubkey) {
-          try {
-            const ndk = await getNDK();
-            const user = ndk.getUser({ pubkey: ln.lnurlData.nostrPubkey });
-            nostrCard = await fetchFromNostr(user.npub);
-          } catch {}
+        // 1. Intentar resolver como NIP-05
+        const nip05Hex = await resolveNip05(q);
+        if (nip05Hex) {
+          card = await fetchProfileByHexPubkey(nip05Hex).catch(() => null);
+          if (card) { card.readonly = true; }
         }
-        card = nostrCard || {
-          name: q.split('@')[0],
-          lnAddress: q,
-          bio: '',
-          avatarUrl: '',
-          github: '', nostr: '', twitter: '',
-          extraLinks: [],
-          readonly: true,
-        };
+
+        // 2. Si no resolvió como NIP-05, intentar Lightning Address
+        if (!card) {
+          try {
+            const ln = new LightningAddress(q);
+            await ln.fetch();
+            let nostrCard = null;
+            if (ln.lnurlData?.allowsNostr && ln.lnurlData?.nostrPubkey) {
+              try {
+                const ndk = await getNDK();
+                const user = ndk.getUser({ pubkey: ln.lnurlData.nostrPubkey });
+                nostrCard = await fetchFromNostr(user.npub);
+              } catch {}
+            }
+            card = nostrCard || {
+              name: q.split('@')[0],
+              lnAddress: q,
+              bio: '',
+              avatarUrl: '',
+              github: '', nostr: '', twitter: '',
+              extraLinks: [],
+              readonly: true,
+            };
+          } catch {
+            throw new Error('No se pudo resolver esa dirección como NIP-05 ni Lightning Address.');
+          }
+        }
       } else {
-        throw new Error('Ingresá un npub (npub1...) o una Lightning Address (usuario@dominio.com)');
+        throw new Error('Ingresá un npub (npub1...) o una dirección (usuario@dominio.com)');
       }
       onCardFound(card);
     } catch (err) {
@@ -1252,7 +1278,7 @@ function SearchView({ onCardFound, onBack }) {
 
           <h2 style={{ margin: '0 0 8px', fontSize: '1.5rem', fontWeight: '700' }}>Buscar tarjeta</h2>
           <p style={{ margin: '0 0 28px', color: 'rgba(255,255,255,0.4)', fontSize: '0.9rem' }}>
-            Ingresá un npub de Nostr o una Lightning Address.
+            Ingresá un npub, NIP-05 o Lightning Address.
           </p>
 
           <input
@@ -1263,7 +1289,7 @@ function SearchView({ onCardFound, onBack }) {
               borderRadius: '12px', color: '#fff', fontSize: '0.95rem', outline: 'none',
               boxSizing: 'border-box', fontFamily: 'system-ui, sans-serif',
             }}
-            placeholder="npub1... o usuario@dominio.com"
+            placeholder="npub1..., nip05@dominio.com o lightning@dominio.com"
             value={query}
             onChange={e => { setQuery(e.target.value); setError(''); }}
             onFocus={e => e.target.style.borderColor = GREEN}
@@ -1293,6 +1319,7 @@ function SearchView({ onCardFound, onBack }) {
             <p style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.3)', margin: '0 0 6px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Ejemplos</p>
             <p style={{ fontSize: '0.8rem', color: 'rgba(255,255,255,0.25)', margin: 0, fontFamily: 'monospace', lineHeight: '1.8' }}>
               npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f79ka9s9suf23v3<br />
+              satoshi@primal.net<br />
               satoshi@getalby.com
             </p>
           </div>
