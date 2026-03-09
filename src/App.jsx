@@ -489,14 +489,13 @@ function CardForm({ onDone, onBack, initialData }) {
   const [nostrImporting, setNostrImporting] = useState(false);
   const [nostrImportError, setNostrImportError] = useState('');
   const [nostrModal, setNostrModal] = useState(false);
-  // NIP-46 state (same-page, no navigation)
+  // NIP-46 state (polling, survives app switching)
   const [nip46Uri, setNip46Uri] = useState(null);
   const [nip46Status, setNip46Status] = useState(null); // null | 'waiting' | 'connected'
-  const wsRef = useRef(null);
   const nip46Ref = useRef(null); // { localSecret, clientPubkey, randomSecret }
 
-  // Cleanup WebSocket on unmount
-  useEffect(() => () => wsRef.current?.close(), []);
+  // Cleanup on unmount
+  useEffect(() => () => stopNip46(), []);
 
   const [form, setForm] = useState({
     name: initialData?.name || '',
@@ -542,98 +541,131 @@ function CardForm({ onDone, onBack, initialData }) {
     }
   }
 
+  // NIP-46 polling refs
+  const pollIntervalRef = useRef(null);
+  const pendingGpkIdRef = useRef(null);
+  const nip46ConnectedRef = useRef(false);
+  const listenStartedRef = useRef(0);
+  const POLL_MS = 2000;
+  const NIP46_RELAYS = ['wss://relay.primal.net', 'wss://nos.lol'];
+
+  function stopNip46() {
+    clearInterval(pollIntervalRef.current);
+    pollIntervalRef.current = null;
+    nip46ConnectedRef.current = false;
+    pendingGpkIdRef.current = null;
+    nip46Ref.current = null;
+    setNip46Uri(null);
+    setNip46Status(null);
+  }
+
   async function startNip46() {
-    wsRef.current?.close();
+    stopNip46();
     setNip46Status('waiting');
     setNostrImportError('');
     try {
       const session = await createNip46Session();
       nip46Ref.current = session;
+      nip46ConnectedRef.current = false;
+      listenStartedRef.current = Math.floor(Date.now() / 1000);
       setNip46Uri(session.uri);
-      listenForNip46(session);
+      pollNip46Once();
+      pollIntervalRef.current = setInterval(pollNip46Once, POLL_MS);
     } catch (err) {
       setNip46Status(null);
       setNostrImportError(err.message);
     }
   }
 
-  async function listenForNip46(session) {
+  async function pollNip46Once() {
+    if (nip46ConnectedRef.current || !nip46Ref.current) return;
+    const { localSecret, clientPubkey } = nip46Ref.current;
+    const { SimplePool } = await import('nostr-tools');
+    const pool = new SimplePool();
+    try {
+      const events = await pool.querySync(NIP46_RELAYS, {
+        kinds: [24133], '#p': [clientPubkey],
+        since: listenStartedRef.current - 5,
+      });
+      for (const event of events) {
+        if (nip46ConnectedRef.current) break;
+        await processNip46Event(event, pool);
+      }
+    } catch { /* ignore */ } finally {
+      pool.close(NIP46_RELAYS);
+    }
+  }
+
+  async function processNip46Event(event, pool) {
+    if (!nip46Ref.current || nip46ConnectedRef.current) return;
+    const { localSecret, randomSecret } = nip46Ref.current;
     const { nip44 } = await import('nostr-tools');
     const { finalizeEvent } = await import('nostr-tools/pure');
-    const { localSecret, clientPubkey, randomSecret } = session;
+    const signerPubkey = event.pubkey;
 
-    const ws = new WebSocket('wss://relay.primal.net');
-    wsRef.current = ws;
+    let parsed;
+    try {
+      const convoKey = nip44.v2.utils.getConversationKey(localSecret, signerPubkey);
+      parsed = JSON.parse(nip44.v2.decrypt(event.content, convoKey));
+    } catch { return; }
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify(['REQ', 'nip46', {
-        kinds: [24133], '#p': [clientPubkey],
-        since: Math.floor(Date.now() / 1000) - 5,
-      }]));
+    const convoKey = nip44.v2.utils.getConversationKey(localSecret, signerPubkey);
+    const publish = async (payload) => {
+      const ev = finalizeEvent({
+        kind: 24133, created_at: Math.floor(Date.now() / 1000),
+        tags: [['p', signerPubkey]],
+        content: nip44.v2.encrypt(JSON.stringify(payload), convoKey),
+      }, localSecret);
+      await Promise.allSettled(pool.publish(NIP46_RELAYS, ev));
     };
 
-    ws.onmessage = async (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg[0] !== 'EVENT') return;
-        const event = msg[2];
-        if (!event || event.kind !== 24133) return;
+    const hexId = () => Array.from(crypto.getRandomValues(new Uint8Array(8))).map(b => b.toString(16).padStart(2, '0')).join('');
 
-        const signerPubkey = event.pubkey;
-        const convoKey = nip44.v2.utils.getConversationKey(localSecret, signerPubkey);
-        const parsed = JSON.parse(nip44.v2.decrypt(event.content, convoKey));
+    // Format A: signer sends { method: "connect" }
+    if (parsed.method === 'connect') {
+      await publish({ id: parsed.id, result: randomSecret, error: null });
+      const gpkId = hexId();
+      pendingGpkIdRef.current = gpkId;
+      await publish({ id: gpkId, method: 'get_public_key', params: [] });
+      return;
+    }
 
-        const sendEvent = (content) => {
-          ws.send(JSON.stringify(['EVENT', finalizeEvent({
-            kind: 24133, created_at: Math.floor(Date.now() / 1000),
-            tags: [['p', signerPubkey]], content,
-          }, localSecret)]));
-        };
+    // Format B (Primal): signer sends { result: secret }
+    if (parsed.result === randomSecret && !pendingGpkIdRef.current) {
+      const gpkId = hexId();
+      pendingGpkIdRef.current = gpkId;
+      await publish({ id: gpkId, method: 'get_public_key', params: [] });
+      return;
+    }
 
-        // The signer initiates connection: respond ACK then request pubkey
-        if (parsed.method === 'connect') {
-          sendEvent(nip44.v2.encrypt(
-            JSON.stringify({ id: parsed.id, result: 'ack', error: '' }), convoKey,
-          ));
-          const reqId = 'gpk' + Date.now();
-          sendEvent(nip44.v2.encrypt(
-            JSON.stringify({ id: reqId, method: 'get_public_key', params: [] }), convoKey,
-          ));
-          return;
-        }
+    // get_public_key response
+    if (pendingGpkIdRef.current &&
+        parsed.id === pendingGpkIdRef.current &&
+        typeof parsed.result === 'string' &&
+        /^[0-9a-f]{64}$/i.test(parsed.result)) {
+      nip46ConnectedRef.current = true;
+      clearInterval(pollIntervalRef.current);
+      setNip46Status('connected');
+      fetchProfileByHexPubkey(parsed.result)
+        .then(profile => { applyNostrProfile(profile); setNostrModal(false); stopNip46(); })
+        .catch(err => setNostrImportError(err.message));
+    }
+  }
 
-        // Alt format: signer confirms with result = secret, then request pubkey
-        const r = parsed.result;
-        if ((r === randomSecret || r === 'ack') && !parsed.id?.startsWith('gpk')) {
-          const reqId = 'gpk' + Date.now();
-          sendEvent(nip44.v2.encrypt(
-            JSON.stringify({ id: reqId, method: 'get_public_key', params: [] }), convoKey,
-          ));
-          return;
-        }
-
-        // get_public_key response: hex pubkey in result
-        if (parsed.id?.startsWith('gpk') && typeof parsed.result === 'string' && /^[0-9a-f]{64}$/i.test(parsed.result)) {
-          ws.close();
-          setNip46Status('connected');
-          fetchProfileByHexPubkey(parsed.result)
-            .then(profile => {
-              applyNostrProfile(profile);
-              setTimeout(() => { setNostrModal(false); setNip46Uri(null); setNip46Status(null); }, 800);
-            })
-            .catch(err => setNostrImportError(err.message));
-        }
-      } catch { /* ignore decode errors */ }
+  // Poll immediately when page becomes visible (user returns from signer app)
+  useEffect(() => {
+    const handle = () => {
+      if (document.visibilityState === 'visible' && nip46Ref.current && !nip46ConnectedRef.current) {
+        pollNip46Once();
+      }
     };
-
-    ws.onerror = () => { setNip46Status(null); setNostrImportError('Error conectando al relay. Intentá de nuevo.'); };
-  }
-
-  function stopNip46() {
-    wsRef.current?.close();
-    setNip46Uri(null);
-    setNip46Status(null);
-  }
+    document.addEventListener('visibilitychange', handle);
+    window.addEventListener('focus', handle);
+    return () => {
+      document.removeEventListener('visibilitychange', handle);
+      window.removeEventListener('focus', handle);
+    };
+  }, []);
 
   function handleAvatarChange(e) {
     const file = e.target.files[0];
