@@ -117,12 +117,13 @@ async function completePrimalConnect(timeoutMs = 20000) {
 
   const { hexToBytes, finalizeEvent } = await import('nostr-tools/pure');
   const { nip44 } = await import('nostr-tools');
+  const { BunkerSigner } = await import('nostr-tools/nip46');
   const localSecretKey = hexToBytes(session.localSecretKey);
 
-  return new Promise((resolve, reject) => {
+  // Step 1: wait for the signer's initial connect event to get the bunker pubkey
+  const signerPubkey = await new Promise((resolve, reject) => {
     const ws = new WebSocket('wss://relay.primal.net');
     let done = false;
-
     const fail = (msg) => { if (!done) { done = true; ws.close(); reject(new Error(msg)); } };
     const timer = setTimeout(() => fail('Timeout: Primal no respondió. Abrí la app y aprobá la solicitud.'), timeoutMs);
 
@@ -139,38 +140,47 @@ async function completePrimalConnect(timeoutMs = 20000) {
         const event = msg[2];
         if (!event || event.kind !== 24133) return;
 
-        const signerPubkey = event.pubkey;
-        const convoKey = nip44.v2.utils.getConversationKey(localSecretKey, signerPubkey);
+        const sigPubkey = event.pubkey;
+        const convoKey = nip44.v2.utils.getConversationKey(localSecretKey, sigPubkey);
         const parsed = JSON.parse(nip44.v2.decrypt(event.content, convoKey));
 
+        // Format A: signer sends { method: "connect", params: [signerPubkey, secret] }
         if (parsed.method === 'connect') {
-          const userPubkeyHex = parsed.params?.[0];
-          if (!userPubkeyHex) return;
-
-          // Send ACK back to signer
-          const ackContent = nip44.v2.encrypt(
+          const ack = nip44.v2.encrypt(
             JSON.stringify({ id: parsed.id, result: 'ack', error: '' }),
-            nip44.v2.utils.getConversationKey(localSecretKey, signerPubkey),
+            convoKey,
           );
-          const ackEvent = finalizeEvent({
-            kind: 24133,
-            created_at: Math.floor(Date.now() / 1000),
-            tags: [['p', signerPubkey]],
-            content: ackContent,
-          }, localSecretKey);
-          ws.send(JSON.stringify(['EVENT', ackEvent]));
+          ws.send(JSON.stringify(['EVENT', finalizeEvent({
+            kind: 24133, created_at: Math.floor(Date.now() / 1000),
+            tags: [['p', sigPubkey]], content: ack,
+          }, localSecretKey)]));
+          done = true; clearTimeout(timer); setTimeout(() => ws.close(), 400);
+          resolve(sigPubkey);
+          return;
+        }
 
-          done = true;
-          clearTimeout(timer);
-          localStorage.removeItem('nip46_pending');
-          setTimeout(() => ws.close(), 500);
-          resolve(userPubkeyHex);
+        // Format B: signer sends { result: secret } confirming our nostrconnect URI
+        const r = parsed.result;
+        if (r === session.secret || r === 'ack' || r === true || r === 'true') {
+          done = true; clearTimeout(timer); setTimeout(() => ws.close(), 400);
+          resolve(sigPubkey);
         }
       } catch { /* ignore decode errors */ }
     };
 
     ws.onerror = () => fail('Error conectando a relay.primal.net');
   });
+
+  // Step 2: use BunkerSigner to get the user's actual public key
+  const signer = BunkerSigner.fromBunker(localSecretKey, {
+    pubkey: signerPubkey,
+    relays: ['wss://relay.primal.net'],
+  }, {});
+  const userPubkeyHex = await signer.getPublicKey();
+  signer.close?.();
+
+  localStorage.removeItem('nip46_pending');
+  return userPubkeyHex;
 }
 
 // ── Bitcoin price ticker ───────────────────────────────────────────────────────
@@ -213,9 +223,34 @@ export default function App() {
   const [view, setView] = useState('landing');
   const [cardData, setCardData] = useState(null);
   const [ownCard, setOwnCard] = useState(null);
+  const [nostrPreset, setNostrPreset] = useState(null); // prefilled from Amber/Primal callback
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const cleanUrl = window.location.pathname;
+
+    // ── Amber callback: ?event=<hex_pubkey> (NIP-55) ──────────────────────────
+    const amberPk = params.get('event');
+    if (amberPk && /^[0-9a-f]{64}$/i.test(amberPk)) {
+      window.history.replaceState({}, '', cleanUrl);
+      setView('loading');
+      fetchProfileByHexPubkey(amberPk)
+        .then(profile => { setNostrPreset(profile); setView('form'); })
+        .catch(() => setView('form'));
+      return;
+    }
+
+    // ── Primal / NIP-46 callback: ?nip46_callback=1 ───────────────────────────
+    if (params.get('nip46_callback') && localStorage.getItem('nip46_pending')) {
+      window.history.replaceState({}, '', cleanUrl);
+      setView('loading');
+      completePrimalConnect()
+        .then(hexPubkey => fetchProfileByHexPubkey(hexPubkey))
+        .then(profile => { setNostrPreset(profile); setView('form'); })
+        .catch(() => setView('form'));
+      return;
+    }
+
     const npub = params.get('npub');
     const cardParam = params.get('card');
 
@@ -277,7 +312,7 @@ export default function App() {
     </div>
   );
   else if (view === 'landing') content = <Landing onStart={() => ownCard ? setView('card') : setView('form')} hasCard={!!ownCard} onSearch={openSearch} />;
-  else if (view === 'form') content = <CardForm onDone={saveCard} onBack={() => setView('landing')} initialData={ownCard} />;
+  else if (view === 'form') content = <CardForm onDone={saveCard} onBack={() => setView('landing')} initialData={nostrPreset || ownCard} />;
   else if (view === 'card') content = <CardView data={cardData} onEdit={cardData?.readonly ? null : () => setView('form')} onBack={cardData?.readonly ? () => { setCardData(ownCard); setView('search'); } : null} onSearch={openSearch} onHome={() => { if (ownCard) setCardData(ownCard); setView('landing'); }} />;
   else if (view === 'search') content = <SearchView onCardFound={handleCardFound} onBack={handleBackFromSearch} />;
 
@@ -564,39 +599,6 @@ function CardForm({ onDone, onBack, initialData }) {
   const [nostrImporting, setNostrImporting] = useState(false);
   const [nostrImportError, setNostrImportError] = useState('');
   const [nostrModal, setNostrModal] = useState(false);
-  const [keyInput, setKeyInput] = useState('');
-  const [keyInputError, setKeyInputError] = useState('');
-  const [keyInputLoading, setKeyInputLoading] = useState(false);
-
-  // Detectar callbacks de Amber y Primal al volver a la página
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const cleanUrl = window.location.pathname;
-
-    // Amber callback: ?event=<hex_pubkey>
-    const amberPubkey = params.get('event');
-    if (amberPubkey && amberPubkey.match(/^[0-9a-f]{64}$/i)) {
-      window.history.replaceState({}, '', cleanUrl);
-      setNostrImporting(true);
-      fetchProfileByHexPubkey(amberPubkey)
-        .then(profile => applyNostrProfile(profile))
-        .catch(err => setNostrImportError(err.message))
-        .finally(() => setNostrImporting(false));
-      return;
-    }
-
-    // Primal / NIP-46 callback: ?nip46_callback=1
-    const nip46Callback = params.get('nip46_callback');
-    if (nip46Callback && localStorage.getItem('nip46_pending')) {
-      window.history.replaceState({}, '', cleanUrl);
-      setNostrImporting(true);
-      completePrimalConnect()
-        .then(hexPubkey => fetchProfileByHexPubkey(hexPubkey))
-        .then(profile => applyNostrProfile(profile))
-        .catch(err => setNostrImportError(err.message))
-        .finally(() => setNostrImporting(false));
-    }
-  }, []);
 
   const [form, setForm] = useState({
     name: initialData?.name || '',
@@ -639,21 +641,6 @@ function CardForm({ onDone, onBack, initialData }) {
       setNostrImportError(err.message);
     } finally {
       setNostrImporting(false);
-    }
-  }
-
-  async function handleKeyImport() {
-    setKeyInputError('');
-    setKeyInputLoading(true);
-    try {
-      const profile = await fetchProfileByKey(keyInput);
-      applyNostrProfile(profile);
-      setNostrModal(false);
-      setKeyInput('');
-    } catch (err) {
-      setKeyInputError(err.message);
-    } finally {
-      setKeyInputLoading(false);
     }
   }
 
