@@ -4,6 +4,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { LightningAddress } from '@getalby/lightning-tools';
 import { nwc } from '@getalby/sdk';
 import NDK from '@nostr-dev-kit/ndk';
+import { saveCardRemote, loadCardRemote, getStorageKey } from './storage';
 
 // ── Nostr + NWC ───────────────────────────────────────────────────────────────
 
@@ -144,22 +145,47 @@ export default function App() {
       } catch { setView('landing'); }
       return;
     }
-    // Restaurar tarjeta guardada localmente
-    try {
-      const saved = localStorage.getItem('cardData');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        setCardData(parsed);
-        setOwnCard(parsed);
+    // Restaurar tarjeta: primero local, luego intentar sincronizar desde Supabase
+    const restoreCard = async () => {
+      let local = null;
+      try {
+        const saved = localStorage.getItem('cardData');
+        if (saved) local = JSON.parse(saved);
+      } catch {}
+
+      if (local) {
+        setCardData(local);
+        setOwnCard(local);
         setView('card');
       }
-    } catch {}
+
+      // Intentar traer versión más actualizada desde Supabase
+      try {
+        const key = localStorage.getItem('remoteCardKey');
+        if (key) {
+          const remote = await loadCardRemote(key);
+          if (remote) {
+            setCardData(remote);
+            setOwnCard(remote);
+            try { localStorage.setItem('cardData', JSON.stringify(remote)); } catch {}
+            if (!local) setView('card');
+          }
+        }
+      } catch {}
+    };
+    restoreCard();
   }, []);
 
   function saveCard(data) {
     setCardData(data);
     setOwnCard(data);
     try { localStorage.setItem('cardData', JSON.stringify(data)); } catch {}
+    // Guardar en Supabase si hay lightning address o npub
+    const key = getStorageKey(data);
+    if (key) {
+      try { localStorage.setItem('remoteCardKey', key); } catch {}
+      saveCardRemote(data).catch(() => {});
+    }
     setView('card');
   }
 
@@ -186,7 +212,7 @@ export default function App() {
       </div>
     </div>
   );
-  else if (view === 'landing') content = <Landing onStart={() => ownCard ? setView('card') : setView('form')} hasCard={!!ownCard} onSearch={openSearch} />;
+  else if (view === 'landing') content = <Landing onStart={() => ownCard ? setView('card') : setView('form')} hasCard={!!ownCard} onSearch={openSearch} onRestore={saveCard} />;
   else if (view === 'form') content = <CardForm onDone={saveCard} onBack={() => setView('landing')} initialData={ownCard} />;
   else if (view === 'card') content = <CardView data={cardData} onEdit={cardData?.readonly ? null : () => setView('form')} onBack={cardData?.readonly ? () => { setCardData(ownCard); setView('search'); } : null} onSearch={openSearch} onHome={() => { if (ownCard) setCardData(ownCard); setView('landing'); }} />;
   else if (view === 'search') content = <SearchView onCardFound={handleCardFound} onBack={handleBackFromSearch} />;
@@ -300,7 +326,29 @@ const BG = 'linear-gradient(160deg, #0a0f1a 0%, #0d1f2d 50%, #0a0f1a 100%)';
 
 // ── Landing ──────────────────────────────────────────────────────────────────
 
-function Landing({ onStart, hasCard, onSearch }) {
+function Landing({ onStart, hasCard, onSearch, onRestore }) {
+  const [showRestore, setShowRestore] = useState(false);
+  const [restoreKey, setRestoreKey] = useState('');
+  const [restoreLoading, setRestoreLoading] = useState(false);
+  const [restoreError, setRestoreError] = useState('');
+
+  async function handleRestore() {
+    const key = restoreKey.trim().toLowerCase();
+    if (!key) return;
+    setRestoreLoading(true);
+    setRestoreError('');
+    try {
+      const data = await loadCardRemote(key);
+      if (!data) { setRestoreError('No se encontró ninguna tarjeta con esa dirección.'); return; }
+      try { localStorage.setItem('remoteCardKey', key); localStorage.setItem('cardData', JSON.stringify(data)); } catch {}
+      onRestore(data);
+    } catch {
+      setRestoreError('Error al conectar. Verificá tu conexión.');
+    } finally {
+      setRestoreLoading(false);
+    }
+  }
+
   const features = [
     { icon: '⚡', title: 'Lightning Address', desc: 'Recibí pagos al instante con tu dirección Lightning' },
     { icon: '🪪', title: 'Tarjeta digital', desc: 'Tu identidad Bitcoin en un solo link compartible' },
@@ -385,6 +433,54 @@ function Landing({ onStart, hasCard, onSearch }) {
           >
             Buscar tarjeta de alguien
           </button>
+
+          {!hasCard && (
+            <div style={{ width: '100%', maxWidth: '340px' }}>
+              <button
+                onClick={() => { setShowRestore(v => !v); setRestoreError(''); }}
+                style={{
+                  background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)',
+                  cursor: 'pointer', fontSize: '0.82rem', padding: '4px 0',
+                  textDecoration: 'underline', textDecorationStyle: 'dotted',
+                }}
+              >
+                ¿Ya tenés una tarjeta en otro dispositivo?
+              </button>
+
+              {showRestore && (
+                <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <input
+                    type="text"
+                    placeholder="tu@lightningaddress.com"
+                    value={restoreKey}
+                    onChange={e => { setRestoreKey(e.target.value); setRestoreError(''); }}
+                    onKeyDown={e => e.key === 'Enter' && handleRestore()}
+                    style={{
+                      width: '100%', padding: '12px 14px', boxSizing: 'border-box',
+                      background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)',
+                      borderRadius: '10px', color: '#fff', fontSize: '0.9rem', outline: 'none',
+                      fontFamily: 'system-ui, sans-serif',
+                    }}
+                  />
+                  {restoreError && (
+                    <p style={{ margin: 0, fontSize: '0.8rem', color: '#ff6b6b' }}>{restoreError}</p>
+                  )}
+                  <button
+                    onClick={handleRestore}
+                    disabled={restoreLoading || !restoreKey.trim()}
+                    style={{
+                      padding: '11px', background: 'rgba(0,255,157,0.1)',
+                      border: '1px solid rgba(0,255,157,0.3)', borderRadius: '10px',
+                      color: GREEN, cursor: restoreLoading ? 'default' : 'pointer',
+                      fontSize: '0.9rem', fontWeight: '600', opacity: restoreLoading ? 0.6 : 1,
+                    }}
+                  >
+                    {restoreLoading ? 'Buscando...' : 'Cargar mi tarjeta'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Features grid */}
@@ -480,7 +576,21 @@ function CardForm({ onDone, onBack, initialData }) {
   useEffect(() => {
     if (nip46.connected && nip46.remotePubkey) {
       fetchProfileByHexPubkey(nip46.remotePubkey)
-        .then(profile => { applyNostrProfile(profile); setNostrNpub(profile.npub); setNostrModal(false); nip46.reset(); })
+        .then(async profile => {
+          // Buscar en Supabase si ya hay una tarjeta guardada con este npub
+          const saved = await loadCardRemote(profile.npub).catch(() => null);
+          if (saved) {
+            // Existe tarjeta previa → restaurar esos datos (tienen personalizaciones del usuario)
+            applyNostrProfile(saved);
+            try { localStorage.setItem('remoteCardKey', profile.npub); } catch {}
+          } else {
+            // Primera vez → usar perfil de Nostr
+            applyNostrProfile(profile);
+          }
+          setNostrNpub(profile.npub);
+          setNostrModal(false);
+          nip46.reset();
+        })
         .catch(err => { setNostrImportError(err.message); nip46.reset(); });
     }
   }, [nip46.connected, nip46.remotePubkey]); // eslint-disable-line
@@ -521,7 +631,14 @@ function CardForm({ onDone, onBack, initialData }) {
     setNostrModal(false);
     try {
       const profile = await fetchOwnNostrProfile();
-      applyNostrProfile(profile);
+      // Buscar en Supabase si ya hay tarjeta guardada con este npub
+      const saved = profile.npub ? await loadCardRemote(profile.npub).catch(() => null) : null;
+      if (saved) {
+        applyNostrProfile(saved);
+        try { localStorage.setItem('remoteCardKey', profile.npub); } catch {}
+      } else {
+        applyNostrProfile(profile);
+      }
       if (profile.npub) setNostrNpub(profile.npub);
     } catch (err) {
       setNostrImportError(err.message);
