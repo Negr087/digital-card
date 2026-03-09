@@ -70,6 +70,7 @@ async function fetchOwnNostrProfile() {
     twitter: lnCard.twitter || '',
     nostr: `https://primal.net/${user.npub}`,
     extraLinks: lnCard.extraLinks || [],
+    npub: user.npub,
   };
 }
 
@@ -473,12 +474,13 @@ function CardForm({ onDone, onBack, initialData }) {
   const [nostrImporting, setNostrImporting] = useState(false);
   const [nostrImportError, setNostrImportError] = useState('');
   const [nostrModal, setNostrModal] = useState(false);
+  const [nostrNpub, setNostrNpub] = useState(initialData?.npub || null);
   const nip46 = useNostrConnect();
 
   useEffect(() => {
     if (nip46.connected && nip46.remotePubkey) {
       fetchProfileByHexPubkey(nip46.remotePubkey)
-        .then(profile => { applyNostrProfile(profile); setNostrModal(false); nip46.reset(); })
+        .then(profile => { applyNostrProfile(profile); setNostrNpub(profile.npub); setNostrModal(false); nip46.reset(); })
         .catch(err => { setNostrImportError(err.message); nip46.reset(); });
     }
   }, [nip46.connected, nip46.remotePubkey]); // eslint-disable-line
@@ -520,6 +522,7 @@ function CardForm({ onDone, onBack, initialData }) {
     try {
       const profile = await fetchOwnNostrProfile();
       applyNostrProfile(profile);
+      if (profile.npub) setNostrNpub(profile.npub);
     } catch (err) {
       setNostrImportError(err.message);
     } finally {
@@ -659,31 +662,44 @@ function CardForm({ onDone, onBack, initialData }) {
 
               {/* Nostr import */}
               <div style={{ marginBottom: '24px' }}>
-                <button
-                  onClick={() => { setNostrModal(true); setNostrImportError(''); }}
-                  disabled={nostrImporting}
-                  style={{
-                    width: '100%', padding: '13px 16px',
-                    background: nostrImporting ? 'rgba(102,36,130,0.08)' : 'rgba(102,36,130,0.12)',
-                    border: '1px solid rgba(102,36,130,0.4)',
-                    borderRadius: '12px', color: '#c084fc', cursor: nostrImporting ? 'default' : 'pointer',
-                    fontSize: '0.95rem', fontWeight: '600',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                    transition: 'background 0.2s',
-                    opacity: nostrImporting ? 0.7 : 1,
-                  }}
-                  onMouseEnter={e => { if (!nostrImporting) e.currentTarget.style.background = 'rgba(102,36,130,0.22)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = nostrImporting ? 'rgba(102,36,130,0.08)' : 'rgba(102,36,130,0.12)'; }}
-                >
-                  <NostrIcon size={18} />
-                  {nostrImporting ? 'Importando perfil...' : 'Conectar con Nostr'}
-                </button>
+                {nostrNpub ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 16px', background: 'rgba(102,36,130,0.08)', border: '1px solid rgba(102,36,130,0.25)', borderRadius: '12px' }}>
+                    <NostrIcon size={18} />
+                    <span style={{ flex: 1, fontSize: '0.85rem', color: '#c084fc', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {nostrNpub.slice(0, 12)}…{nostrNpub.slice(-6)}
+                    </span>
+                    <button
+                      onClick={() => setNostrNpub(null)}
+                      style={{ background: 'none', border: '1px solid rgba(255,100,100,0.3)', borderRadius: '8px', color: 'rgba(255,100,100,0.7)', cursor: 'pointer', fontSize: '0.78rem', padding: '4px 10px', whiteSpace: 'nowrap' }}
+                    >Desconectar</button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setNostrModal(true); setNostrImportError(''); }}
+                    disabled={nostrImporting}
+                    style={{
+                      width: '100%', padding: '13px 16px',
+                      background: nostrImporting ? 'rgba(102,36,130,0.08)' : 'rgba(102,36,130,0.12)',
+                      border: '1px solid rgba(102,36,130,0.4)',
+                      borderRadius: '12px', color: '#c084fc', cursor: nostrImporting ? 'default' : 'pointer',
+                      fontSize: '0.95rem', fontWeight: '600',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                      transition: 'background 0.2s',
+                      opacity: nostrImporting ? 0.7 : 1,
+                    }}
+                    onMouseEnter={e => { if (!nostrImporting) e.currentTarget.style.background = 'rgba(102,36,130,0.22)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = nostrImporting ? 'rgba(102,36,130,0.08)' : 'rgba(102,36,130,0.12)'; }}
+                  >
+                    <NostrIcon size={18} />
+                    {nostrImporting ? 'Importando perfil...' : 'Conectar con Nostr'}
+                  </button>
+                )}
                 {nostrImportError && (
                   <span style={{ fontSize: '0.78rem', color: '#ff6b6b', marginTop: '6px', display: 'block' }}>
                     {nostrImportError}
                   </span>
                 )}
-                {!nostrImportError && (
+                {!nostrImportError && !nostrNpub && (
                   <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.25)', marginTop: '6px', display: 'block', textAlign: 'center' }}>
                     Importa foto, banner, bio, Lightning Address y NIP-05 desde tu perfil Nostr
                   </span>
