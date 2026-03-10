@@ -237,6 +237,25 @@ export default function App() {
 
 const GREEN = '#00ff9d';
 
+const PAYMENT_SOUNDS = [
+  '/sounds/a comerla.ogg',
+  '/sounds/dolor.ogg',
+  '/sounds/exactamente lo que vote.ogg',
+  '/sounds/hola-juan-carlos.mp3',
+  '/sounds/kukardo.ogg',
+  '/sounds/michael.ogg',
+  '/sounds/noo la policia.mp3',
+  '/sounds/opinion de los kukas.ogg',
+  '/sounds/satoshi nakamoto.mp3',
+  '/sounds/viva la libertad carajo.ogg',
+];
+
+function playPaymentSound() {
+  const src = PAYMENT_SOUNDS[Math.floor(Math.random() * PAYMENT_SOUNDS.length)];
+  const audio = new Audio(src);
+  audio.play().catch(() => {});
+}
+
 function EggsIcon({ size = 20 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 33 26" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ display: 'inline', verticalAlign: 'middle' }}>
@@ -1383,6 +1402,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
       if (!window.webln) throw new Error('No se detectó wallet WebLN. Instalá Alby.');
       await window.webln.enable();
       await window.webln.sendPayment(invoice);
+      playPaymentSound();
       setStatus({ msg: 'Pago enviado! Gracias!', type: 'success' });
       setInvoice(null);
       setTimeout(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, 2500);
@@ -1451,6 +1471,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
           const callbackData = await callbackRes.json();
 
           if (callbackData.status === 'OK') {
+            playPaymentSound();
             setStatus({ msg: '¡Pago recibido desde tu tarjeta NFC!', type: 'success' });
           } else {
             setStatus({ msg: `Error de la tarjeta: ${callbackData.reason || 'desconocido'}`, type: 'error' });
@@ -1475,6 +1496,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
       setStatus({ msg: 'Pagando con NWC...', type: 'info' });
       const client = new nwc.NWCClient({ nostrWalletConnectUrl: nwcUrl });
       await client.payInvoice({ invoice });
+      playPaymentSound();
       setStatus({ msg: 'Pago enviado con NWC!', type: 'success' });
       setInvoice(null);
       setTimeout(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, 2500);
@@ -1482,6 +1504,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
       const errStr = String(err?.message ?? err);
       // Algunas wallets devuelven preimage vacío aunque el pago fue exitoso
       if (errStr.includes('preimage') || errStr.includes('validation')) {
+        playPaymentSound();
         setStatus({ msg: 'Pago enviado con NWC!', type: 'success' });
         setInvoice(null);
         setTimeout(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, 2500);
