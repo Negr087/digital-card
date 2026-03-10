@@ -1479,13 +1479,14 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
       setInvoice(null);
       setTimeout(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, 2500);
     } catch (err) {
+      const errStr = String(err?.message ?? err);
       // Algunas wallets devuelven preimage vacío aunque el pago fue exitoso
-      if (err.message && err.message.includes('preimage')) {
+      if (errStr.includes('preimage') || errStr.includes('validation')) {
         setStatus({ msg: 'Pago enviado con NWC!', type: 'success' });
         setInvoice(null);
         setTimeout(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, 2500);
       } else {
-        setStatus({ msg: 'Error NWC: ' + err.message, type: 'error' });
+        setStatus({ msg: 'Error NWC: ' + errStr, type: 'error' });
       }
     }
   }
