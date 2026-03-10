@@ -1397,13 +1397,73 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
       setStatus({ msg: 'NFC no disponible en este dispositivo o browser. Usá Chrome en Android.', type: 'error' });
       return;
     }
+
+    const abortController = new AbortController();
+
     try {
-      setStatus({ msg: 'Acercá el dispositivo NFC...', type: 'info' });
+      setStatus({ msg: 'Acercá tu tarjeta NFC Lightning...', type: 'info' });
       const ndef = new NDEFReader();
-      await ndef.write({ records: [{ recordType: 'url', data: `lightning:${invoice}` }] });
-      setStatus({ msg: 'Invoice enviado por NFC!', type: 'success' });
+      await ndef.scan({ signal: abortController.signal });
+
+      ndef.onreadingerror = () => {
+        setStatus({ msg: 'No se pudo leer la tarjeta NFC.', type: 'error' });
+        abortController.abort();
+      };
+
+      ndef.onreading = async (event) => {
+        abortController.abort(); // dejar de escanear tras primera lectura
+
+        // Extraer URL del tag NFC
+        let tagUrl = '';
+        for (const record of event.message.records) {
+          if (record.recordType === 'url') {
+            tagUrl = new TextDecoder().decode(record.data);
+            break;
+          }
+          if (record.recordType === 'text') {
+            tagUrl = new TextDecoder().decode(record.data);
+            break;
+          }
+        }
+
+        if (!tagUrl) {
+          setStatus({ msg: 'La tarjeta NFC no contiene una URL Lightning reconocible.', type: 'error' });
+          return;
+        }
+
+        // Normalizar lnurlw:// → https://
+        const fetchUrl = tagUrl.replace(/^lnurlw:\/\//i, 'https://');
+
+        try {
+          setStatus({ msg: 'Conectando con la tarjeta...', type: 'info' });
+          const res = await fetch(fetchUrl);
+          const data = await res.json();
+
+          if (data.tag !== 'withdrawRequest') {
+            setStatus({ msg: `La tarjeta no es LNURL-withdraw (tipo: "${data.tag}"). No se puede pagar con ella.`, type: 'error' });
+            return;
+          }
+
+          // Enviar el invoice al callback de la tarjeta
+          setStatus({ msg: 'Enviando pago desde la tarjeta...', type: 'info' });
+          const sep = data.callback.includes('?') ? '&' : '?';
+          const callbackRes = await fetch(`${data.callback}${sep}k1=${data.k1}&pr=${invoice}`);
+          const callbackData = await callbackRes.json();
+
+          if (callbackData.status === 'OK') {
+            setStatus({ msg: '¡Pago recibido desde tu tarjeta NFC!', type: 'success' });
+          } else {
+            setStatus({ msg: `Error de la tarjeta: ${callbackData.reason || 'desconocido'}`, type: 'error' });
+          }
+        } catch (err) {
+          setStatus({ msg: 'Error al procesar la tarjeta: ' + err.message, type: 'error' });
+        }
+      };
+
     } catch (err) {
-      setStatus({ msg: 'Error NFC: ' + err.message, type: 'error' });
+      if (err.name !== 'AbortError') {
+        setStatus({ msg: 'Error NFC: ' + err.message, type: 'error' });
+      }
     }
   }
 
