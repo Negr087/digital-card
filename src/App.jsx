@@ -151,8 +151,41 @@ export default function App() {
       return;
     }
     if (cardParam) {
+      const decoded = decodeURIComponent(cardParam);
+      setView('loading');
+      // npub
+      if (decoded.startsWith('npub1')) {
+        fetchFromNostr(decoded)
+          .then(data => { if (data) { setCardData(data); setView('card'); } else setView('landing'); })
+          .catch(() => setView('landing'));
+        return;
+      }
+      // Lightning Address o NIP-05 (contiene @)
+      if (decoded.includes('@')) {
+        (async () => {
+          try {
+            // Intentar NIP-05 primero
+            const nip05Hex = await resolveNip05(decoded).catch(() => null);
+            if (nip05Hex) {
+              const card = await fetchProfileByHexPubkey(nip05Hex);
+              card.readonly = true;
+              setCardData(card); setView('card'); return;
+            }
+            // Supabase
+            const remote = await loadCardRemote(decoded.toLowerCase());
+            if (remote) { setCardData({ ...remote, readonly: true }); setView('card'); return; }
+            // Lightning Address básica
+            const ln = new LightningAddress(decoded);
+            await ln.fetch();
+            setCardData({ name: decoded.split('@')[0], lnAddress: decoded, bio: '', avatarUrl: '', github: '', nostr: '', twitter: '', extraLinks: [], readonly: true });
+            setView('card');
+          } catch { setView('landing'); }
+        })();
+        return;
+      }
+      // Fallback: JSON base64 legacy
       try {
-        const data = JSON.parse(decodeURIComponent(escape(atob(cardParam))));
+        const data = JSON.parse(decodeURIComponent(escape(atob(decoded))));
         setCardData({ ...data, readonly: true });
         setView('card');
       } catch { setView('landing'); }
@@ -225,7 +258,7 @@ export default function App() {
       </div>
     </div>
   );
-  else if (view === 'landing') content = <Landing onStart={() => ownCard ? setView('card') : setView('form')} hasCard={!!ownCard} onSearch={openSearch} onRestore={saveCard} />;
+  else if (view === 'landing') content = <Landing onStart={() => ownCard ? setView('card') : setView('form')} hasCard={!!ownCard} onSearch={openSearch} />;
   else if (view === 'form') content = <CardForm onDone={saveCard} onBack={() => setView('landing')} initialData={ownCard} />;
   else if (view === 'card') content = <CardView data={cardData} onEdit={cardData?.readonly ? null : () => setView('form')} onBack={cardData?.readonly ? () => { setCardData(ownCard); setView('search'); } : null} onSearch={openSearch} onHome={() => { if (ownCard) setCardData(ownCard); setView('landing'); }} />;
   else if (view === 'search') content = <SearchView onCardFound={handleCardFound} onBack={handleBackFromSearch} />;
@@ -367,29 +400,7 @@ const BG = 'linear-gradient(160deg, #0a0f1a 0%, #0d1f2d 50%, #0a0f1a 100%)';
 
 // ── Landing ──────────────────────────────────────────────────────────────────
 
-function Landing({ onStart, hasCard, onSearch, onRestore }) {
-  const [showRestore, setShowRestore] = useState(false);
-  const [restoreKey, setRestoreKey] = useState('');
-  const [restoreLoading, setRestoreLoading] = useState(false);
-  const [restoreError, setRestoreError] = useState('');
-
-  async function handleRestore() {
-    const key = restoreKey.trim().toLowerCase();
-    if (!key) return;
-    setRestoreLoading(true);
-    setRestoreError('');
-    try {
-      const data = await loadCardRemote(key);
-      if (!data) { setRestoreError('No se encontró ninguna tarjeta con esa dirección.'); return; }
-      try { localStorage.setItem('remoteCardKey', key); localStorage.setItem('cardData', JSON.stringify(data)); } catch {}
-      onRestore(data);
-    } catch {
-      setRestoreError('Error al conectar. Verificá tu conexión.');
-    } finally {
-      setRestoreLoading(false);
-    }
-  }
-
+function Landing({ onStart, hasCard, onSearch }) {
   const features = [
     { icon: '⚡', title: 'Lightning Address', desc: 'Recibí pagos al instante con tu dirección Lightning' },
     { icon: '🪪', title: 'Tarjeta digital', desc: 'Tu identidad Bitcoin en un solo link compartible' },
@@ -475,53 +486,6 @@ function Landing({ onStart, hasCard, onSearch, onRestore }) {
             Buscar tarjeta de alguien
           </button>
 
-          {!hasCard && (
-            <div style={{ width: '100%', maxWidth: '340px' }}>
-              <button
-                onClick={() => { setShowRestore(v => !v); setRestoreError(''); }}
-                style={{
-                  background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)',
-                  cursor: 'pointer', fontSize: '0.82rem', padding: '4px 0',
-                  textDecoration: 'underline', textDecorationStyle: 'dotted',
-                }}
-              >
-                ¿Ya tenés una tarjeta en otro dispositivo?
-              </button>
-
-              {showRestore && (
-                <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <input
-                    type="text"
-                    placeholder="tu@lightningaddress.com"
-                    value={restoreKey}
-                    onChange={e => { setRestoreKey(e.target.value); setRestoreError(''); }}
-                    onKeyDown={e => e.key === 'Enter' && handleRestore()}
-                    style={{
-                      width: '100%', padding: '12px 14px', boxSizing: 'border-box',
-                      background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)',
-                      borderRadius: '10px', color: '#fff', fontSize: '0.9rem', outline: 'none',
-                      fontFamily: 'system-ui, sans-serif',
-                    }}
-                  />
-                  {restoreError && (
-                    <p style={{ margin: 0, fontSize: '0.8rem', color: '#ff6b6b' }}>{restoreError}</p>
-                  )}
-                  <button
-                    onClick={handleRestore}
-                    disabled={restoreLoading || !restoreKey.trim()}
-                    style={{
-                      padding: '11px', background: 'rgba(0,255,157,0.1)',
-                      border: '1px solid rgba(0,255,157,0.3)', borderRadius: '10px',
-                      color: GREEN, cursor: restoreLoading ? 'default' : 'pointer',
-                      fontSize: '0.9rem', fontWeight: '600', opacity: restoreLoading ? 0.6 : 1,
-                    }}
-                  >
-                    {restoreLoading ? 'Buscando...' : 'Cargar mi tarjeta'}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         {/* Features grid */}
@@ -555,13 +519,7 @@ function Landing({ onStart, hasCard, onSearch, onRestore }) {
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px',
           }}>
             {/* mock avatar */}
-            <div style={{
-              width: '72px', height: '72px', borderRadius: '50%',
-              background: 'linear-gradient(135deg, #00ff9d, #0077ff)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '1.6rem', fontWeight: '700', color: '#000',
-              boxShadow: `0 0 24px rgba(0,255,157,0.25)`,
-            }}>S</div>
+            <img src="/satoshi.webp" alt="satoshi" style={{ width: '72px', height: '72px', borderRadius: '50%', objectFit: 'cover', boxShadow: `0 0 24px rgba(0,255,157,0.25)` }} />
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontWeight: '700', fontSize: '1.3rem' }}>satoshi</div>
               <div style={{ color: GREEN, fontSize: '0.82rem', fontFamily: 'monospace', marginTop: '4px' }}>⚡ satoshi@bitcoin.org</div>
@@ -1640,11 +1598,14 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
   }
 
   function getShareUrl() {
+    const base = `${window.location.origin}${window.location.pathname}`;
+    if (data.npub) return `${base}?card=${data.npub}`;
+    if (data.lnAddress) return `${base}?card=${encodeURIComponent(data.lnAddress)}`;
+    // fallback: JSON comprimido (caso sin npub ni lnAddress)
     const shareData = { ...data };
     delete shareData.nwcUrl;
     delete shareData.readonly;
-    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(shareData))));
-    return `${window.location.origin}${window.location.pathname}?card=${encoded}`;
+    return `${base}?card=${btoa(unescape(encodeURIComponent(JSON.stringify(shareData))))}`;
   }
 
   function copyShareLink() {
