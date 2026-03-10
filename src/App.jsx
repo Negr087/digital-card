@@ -1455,8 +1455,8 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
           setAwaitingMobileConfirm(true);
         }, 180000);
       } else {
-        // Sin verify URL: mostrar botón manual
-        setAwaitingMobileConfirm(true);
+        // Sin verify URL: no hay forma de verificar, no mostramos botón
+        setStatus({ msg: 'Completá el pago en tu wallet.', type: 'info' });
       }
       return;
     }
@@ -1489,8 +1489,20 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
     setTimeout(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, 2500);
   }
 
-  function confirmMobilePayment() {
-    paymentSuccess();
+  async function confirmMobilePayment() {
+    if (!verifyUrl) return;
+    setStatus({ msg: 'Verificando pago...', type: 'info' });
+    try {
+      const res = await fetch(verifyUrl);
+      const data = await res.json();
+      if (data.settled) {
+        paymentSuccess();
+      } else {
+        setStatus({ msg: 'No detectamos el pago todavía. Intentá de nuevo en unos segundos.', type: 'error' });
+      }
+    } catch {
+      setStatus({ msg: 'No se pudo verificar el pago. Intentá de nuevo.', type: 'error' });
+    }
   }
 
   async function payWithNFC() {
@@ -1838,7 +1850,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
               <p style={{ fontSize: '0.85rem', color: status.type === 'success' ? GREEN : status.type === 'error' ? '#ff6b6b' : 'rgba(255,255,255,0.5)', textAlign: 'center', margin: 0 }}>{status.msg}</p>
             )}
 
-            {awaitingMobileConfirm && (
+            {awaitingMobileConfirm && verifyUrl && (
               <button
                 onClick={confirmMobilePayment}
                 style={{

@@ -1,5 +1,5 @@
-const SUPABASE_URL = 'https://natgzxjzfhwkttoagqcu.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5hdGd6eGp6Zmh3a3R0b2FncWN1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMDIxNTQsImV4cCI6MjA4ODU3ODE1NH0.3VCWhRzR2n1Q6e2vV1jICKhgapRkmErgTuIsDEWbuYE';
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 const headers = {
   'apikey': SUPABASE_ANON_KEY,
