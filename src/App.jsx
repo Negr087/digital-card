@@ -1356,11 +1356,14 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
   const [selectedSats, setSelectedSats] = useState(21);
   const [customSats, setCustomSats] = useState('');
   const [invoice, setInvoice] = useState(null);
+  const [verifyUrl, setVerifyUrl] = useState(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState({ msg: '', type: '' });
   const [copied, setCopied] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [awaitingMobileConfirm, setAwaitingMobileConfirm] = useState(false);
+  const pollRef = useRef(null);
 
   const PRESETS = [21, 100, 500, 1000];
   const satsAmount = customSats ? parseInt(customSats) : selectedSats;
@@ -1387,6 +1390,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
       await ln.fetch();
       const inv = await ln.requestInvoice({ satoshi: satsAmount });
       setInvoice(inv.paymentRequest);
+      setVerifyUrl(inv.verify || null);
       setStatus({ msg: '', type: '' });
     } catch (err) {
       setStatus({ msg: 'Error: ' + err.message, type: 'error' });
@@ -1397,18 +1401,79 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
 
   async function payWithWebLN() {
     if (!invoice) return;
+
+    // Mobile: sin extensión WebLN → abrir picker de wallets nativas con lightning: URI
+    if (!window.webln) {
+      window.location.href = `lightning:${invoice}`;
+      setStatus({ msg: 'Completá el pago en tu wallet...', type: 'info' });
+
+      if (verifyUrl) {
+        // Polling automático al volver a la app (visibilitychange)
+        const onVisible = async () => {
+          if (document.visibilityState !== 'visible') return;
+          document.removeEventListener('visibilitychange', onVisible);
+          clearTimeout(pollRef.current);
+
+          // Intentar hasta 5 veces cada 2s al volver
+          let attempts = 0;
+          const poll = async () => {
+            try {
+              const res = await fetch(verifyUrl);
+              const data = await res.json();
+              if (data.settled) {
+                paymentSuccess();
+                return;
+              }
+            } catch {}
+            attempts++;
+            if (attempts < 5) pollRef.current = setTimeout(poll, 2000);
+            else setAwaitingMobileConfirm(true); // fallback: mostrar botón manual
+          };
+          poll();
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        // Timeout de seguridad: si no volvió en 3 min, limpiar listener
+        pollRef.current = setTimeout(() => {
+          document.removeEventListener('visibilitychange', onVisible);
+          setAwaitingMobileConfirm(true);
+        }, 180000);
+      } else {
+        // Sin verify URL: mostrar botón manual
+        setAwaitingMobileConfirm(true);
+      }
+      return;
+    }
+
     try {
       setStatus({ msg: 'Abriendo wallet...', type: 'info' });
-      if (!window.webln) throw new Error('No se detectó wallet WebLN. Instalá Alby.');
       await window.webln.enable();
       await window.webln.sendPayment(invoice);
-      playPaymentSound();
-      setStatus({ msg: 'Pago enviado! Gracias!', type: 'success' });
-      setInvoice(null);
-      setTimeout(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, 2500);
+      paymentSuccess();
     } catch (err) {
-      setStatus({ msg: err.message, type: 'error' });
+      const errStr = String(err?.message ?? err);
+      // Alby y otras wallets a veces no devuelven preimage aunque el pago fue exitoso
+      if (errStr.includes('preimage') || errStr.includes('validation')) {
+        paymentSuccess();
+      } else if (errStr.toLowerCase().includes('cancel') || errStr.toLowerCase().includes('reject') || errStr.toLowerCase().includes('denied')) {
+        setStatus({ msg: 'Pago cancelado.', type: 'error' });
+      } else {
+        setStatus({ msg: err.message, type: 'error' });
+      }
     }
+  }
+
+  function paymentSuccess() {
+    playPaymentSound();
+    setStatus({ msg: '¡Pago recibido! Gracias!', type: 'success' });
+    setInvoice(null);
+    setVerifyUrl(null);
+    setAwaitingMobileConfirm(false);
+    clearTimeout(pollRef.current);
+    setTimeout(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, 2500);
+  }
+
+  function confirmMobilePayment() {
+    paymentSuccess();
   }
 
   async function payWithNFC() {
@@ -1471,8 +1536,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
           const callbackData = await callbackRes.json();
 
           if (callbackData.status === 'OK') {
-            playPaymentSound();
-            setStatus({ msg: '¡Pago recibido desde tu tarjeta NFC!', type: 'success' });
+            paymentSuccess();
           } else {
             setStatus({ msg: `Error de la tarjeta: ${callbackData.reason || 'desconocido'}`, type: 'error' });
           }
@@ -1496,18 +1560,12 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
       setStatus({ msg: 'Pagando con NWC...', type: 'info' });
       const client = new nwc.NWCClient({ nostrWalletConnectUrl: nwcUrl });
       await client.payInvoice({ invoice });
-      playPaymentSound();
-      setStatus({ msg: 'Pago enviado con NWC!', type: 'success' });
-      setInvoice(null);
-      setTimeout(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, 2500);
+      paymentSuccess();
     } catch (err) {
       const errStr = String(err?.message ?? err);
       // Algunas wallets devuelven preimage vacío aunque el pago fue exitoso
       if (errStr.includes('preimage') || errStr.includes('validation')) {
-        playPaymentSound();
-        setStatus({ msg: 'Pago enviado con NWC!', type: 'success' });
-        setInvoice(null);
-        setTimeout(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, 2500);
+        paymentSuccess();
       } else {
         setStatus({ msg: 'Error NWC: ' + errStr, type: 'error' });
       }
@@ -1523,9 +1581,12 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
   function reset() {
     setShowPayment(false);
     setInvoice(null);
+    setVerifyUrl(null);
     setStatus({ msg: '', type: '' });
     setCustomSats('');
     setSelectedSats(21);
+    setAwaitingMobileConfirm(false);
+    clearTimeout(pollRef.current);
   }
 
   function getShareUrl() {
@@ -1758,6 +1819,20 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
 
             {status.msg && (
               <p style={{ fontSize: '0.85rem', color: status.type === 'success' ? GREEN : status.type === 'error' ? '#ff6b6b' : 'rgba(255,255,255,0.5)', textAlign: 'center', margin: 0 }}>{status.msg}</p>
+            )}
+
+            {awaitingMobileConfirm && (
+              <button
+                onClick={confirmMobilePayment}
+                style={{
+                  width: '100%', padding: '14px',
+                  background: `linear-gradient(135deg, ${GREEN}, #00cc7d)`,
+                  color: '#000', fontWeight: '700', border: 'none', borderRadius: '12px',
+                  cursor: 'pointer', fontSize: '0.95rem',
+                }}
+              >
+                ✅ Ya pagué
+              </button>
             )}
 
             <button onClick={reset} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', cursor: 'pointer', fontSize: '0.85rem', textAlign: 'center' }}>
