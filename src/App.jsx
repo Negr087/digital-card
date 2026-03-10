@@ -1455,8 +1455,13 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
           setAwaitingMobileConfirm(true);
         }, 180000);
       } else {
-        // Sin verify URL: no hay forma de verificar, no mostramos botón
-        setStatus({ msg: 'Completá el pago en tu wallet.', type: 'info' });
+        // Sin verify URL: al volver de la wallet asumir que pagó
+        const onVisible = () => {
+          if (document.visibilityState !== 'visible') return;
+          document.removeEventListener('visibilitychange', onVisible);
+          paymentSuccess();
+        };
+        document.addEventListener('visibilitychange', onVisible);
       }
       return;
     }
@@ -1490,18 +1495,23 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
   }
 
   async function confirmMobilePayment() {
-    if (!verifyUrl) return;
-    setStatus({ msg: 'Verificando pago...', type: 'info' });
-    try {
-      const res = await fetch(verifyUrl);
-      const data = await res.json();
-      if (data.settled) {
-        paymentSuccess();
-      } else {
-        setStatus({ msg: 'No detectamos el pago todavía. Intentá de nuevo en unos segundos.', type: 'error' });
+    if (verifyUrl) {
+      // Con verify URL: comprobar antes de confirmar
+      setStatus({ msg: 'Verificando pago...', type: 'info' });
+      try {
+        const res = await fetch(verifyUrl);
+        const data = await res.json();
+        if (data.settled) {
+          paymentSuccess();
+        } else {
+          setStatus({ msg: 'No detectamos el pago todavía. Esperá unos segundos y volvé a intentar.', type: 'error' });
+        }
+      } catch {
+        setStatus({ msg: 'No se pudo verificar el pago. Intentá de nuevo.', type: 'error' });
       }
-    } catch {
-      setStatus({ msg: 'No se pudo verificar el pago. Intentá de nuevo.', type: 'error' });
+    } else {
+      // Sin verify URL: no hay forma de verificar automáticamente, confiar en el usuario
+      paymentSuccess();
     }
   }
 
@@ -1850,7 +1860,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
               <p style={{ fontSize: '0.85rem', color: status.type === 'success' ? GREEN : status.type === 'error' ? '#ff6b6b' : 'rgba(255,255,255,0.5)', textAlign: 'center', margin: 0 }}>{status.msg}</p>
             )}
 
-            {awaitingMobileConfirm && verifyUrl && (
+            {awaitingMobileConfirm && (
               <button
                 onClick={confirmMobilePayment}
                 style={{
