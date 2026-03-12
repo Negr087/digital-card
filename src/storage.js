@@ -14,6 +14,7 @@ const headers = {
  */
 export function getStorageKey(cardData) {
   if (cardData?.lightningAddress) return cardData.lightningAddress.toLowerCase();
+  if (cardData?.lnAddress) return cardData.lnAddress.toLowerCase();
   if (cardData?.npub) return cardData.npub;
   return null;
 }
@@ -25,11 +26,16 @@ export async function saveCardRemote(cardData) {
   const id = getStorageKey(cardData);
   if (!id) return;
 
-  await fetch(`${SUPABASE_URL}/rest/v1/cards`, {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/cards`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ id, data: cardData, updated_at: new Date().toISOString() }),
   });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.status);
+    throw new Error(`Supabase error ${res.status}: ${text}`);
+  }
 }
 
 /**

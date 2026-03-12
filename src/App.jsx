@@ -241,7 +241,7 @@ export default function App() {
     const key = getStorageKey(data);
     if (key) {
       try { localStorage.setItem('remoteCardKey', key); } catch {}
-      saveCardRemote(data).catch(() => {});
+      saveCardRemote(data).catch((err) => { console.error('Error guardando en Supabase:', err); alert('⚠️ No se pudo guardar en la nube: ' + err.message); });
     }
     setView('card');
   }
@@ -631,7 +631,7 @@ function CardForm({ onDone, onBack, initialData }) {
       github: profile.github || prev.github,
       twitter: profile.twitter || prev.twitter,
       nostr: profile.nostr || prev.nostr,
-      extraLinks: profile.extraLinks.length ? profile.extraLinks : prev.extraLinks,
+      extraLinks: (profile.extraLinks?.length) ? profile.extraLinks : prev.extraLinks,
     }));
   }
 
