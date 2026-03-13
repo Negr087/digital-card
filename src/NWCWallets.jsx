@@ -313,7 +313,7 @@ export function WalletTransfer() {
           onMouseEnter={e => e.currentTarget.style.background = 'rgba(247,147,26,0.12)'}
           onMouseLeave={e => e.currentTarget.style.background = 'rgba(247,147,26,0.07)'}
         >
-          ↔ Transferir entre mis wallets
+          ↔ Transferir entre mis NWC
         </button>
       ) : (
         <div style={{ background: 'rgba(247,147,26,0.06)', border: '1px solid rgba(247,147,26,0.25)', borderRadius: '14px', padding: '18px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
