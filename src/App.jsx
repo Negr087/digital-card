@@ -1335,6 +1335,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
   const [showPayment, setShowPayment] = useState(false);
   const [selectedSats, setSelectedSats] = useState(21);
   const [customSats, setCustomSats] = useState('');
+  const [paymentComment, setPaymentComment] = useState('');
   const [invoice, setInvoice] = useState(null);
   const [verifyUrl, setVerifyUrl] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1368,7 +1369,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
     try {
       const ln = new LightningAddress(data.lnAddress);
       await ln.fetch();
-      const inv = await ln.requestInvoice({ satoshi: satsAmount });
+      const inv = await ln.requestInvoice({ satoshi: satsAmount, comment: paymentComment || undefined });
       setInvoice(inv.paymentRequest);
       setVerifyUrl(inv.verify || null);
       setAwaitingMobileConfirm(true);
@@ -1799,6 +1800,15 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
                   placeholder="Otro monto en sats..."
                   value={customSats}
                   onChange={e => setCustomSats(e.target.value)}
+                />
+
+                <input
+                  style={{ width: '100%', padding: '12px 16px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '10px', color: '#fff', fontSize: '0.95rem', outline: 'none', boxSizing: 'border-box', marginTop: '4px' }}
+                  type="text"
+                  placeholder="Comentario o mensaje (opcional) ⚡"
+                  value={paymentComment}
+                  onChange={e => setPaymentComment(e.target.value)}
+                  maxLength={140}
                 />
 
                 <button
