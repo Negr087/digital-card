@@ -413,6 +413,7 @@ const BG = 'linear-gradient(160deg, #0a0f1a 0%, #0d1f2d 50%, #0a0f1a 100%)';
 // ── Landing ──────────────────────────────────────────────────────────────────
 
 function Landing({ onStart, hasCard, onSearch }) {
+  const [showDemo, setShowDemo] = useState(false);
   const features = [
     { icon: '⚡', title: 'Lightning Address', desc: 'Recibí pagos al instante con tu dirección Lightning' },
     { icon: '🪪', title: 'Tarjeta digital', desc: 'Tu identidad Bitcoin en un solo link compartible' },
@@ -562,12 +563,80 @@ function Landing({ onStart, hasCard, onSearch }) {
           </div>
         </div>
 
+        {/* Ver Demo button */}
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: '32px' }}>
+          <button
+            onClick={() => setShowDemo(true)}
+            style={{
+              padding: '13px 36px',
+              background: 'rgba(247,147,26,0.1)',
+              border: '1px solid rgba(247,147,26,0.4)',
+              borderRadius: '14px',
+              color: '#f7931a',
+              fontWeight: '700',
+              fontSize: '0.95rem',
+              cursor: 'pointer',
+              letterSpacing: '0.3px',
+              transition: 'background 0.2s, border-color 0.2s, transform 0.15s',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(247,147,26,0.18)'; e.currentTarget.style.borderColor = 'rgba(247,147,26,0.7)'; e.currentTarget.style.transform = 'scale(1.03)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(247,147,26,0.1)'; e.currentTarget.style.borderColor = 'rgba(247,147,26,0.4)'; e.currentTarget.style.transform = 'scale(1)'; }}
+          >
+            ▶ Ver demo
+          </button>
+        </div>
+
         {/* Footer */}
         <p style={{ textAlign: 'center', fontSize: '0.78rem', color: 'rgba(255,255,255,0.2)', marginTop: '60px', marginBottom: '0' }}>
           Hecho con <EggsIcon size={18} /> en Lightning Hackathon 2026
         </p>
 
       </div>
+
+      {/* Demo modal */}
+      {showDemo && (
+        <div
+          onClick={() => setShowDemo(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000,
+            background: 'rgba(0,0,0,0.85)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            backdropFilter: 'blur(6px)',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              position: 'relative',
+              width: '75vw',
+              maxWidth: '1100px',
+            }}
+          >
+            <button
+              onClick={() => setShowDemo(false)}
+              style={{
+                position: 'absolute', top: '-40px', right: '0',
+                background: 'none', border: 'none',
+                color: 'rgba(255,255,255,0.6)', fontSize: '1.5rem',
+                cursor: 'pointer', lineHeight: 1,
+              }}
+            >✕</button>
+            <video
+              src="/DEMO.mp4"
+              controls
+              autoPlay
+              style={{
+                width: '100%',
+                maxHeight: '75vh',
+                borderRadius: '16px',
+                boxShadow: '0 0 60px rgba(0,0,0,0.8)',
+                display: 'block',
+              }}
+            />
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
