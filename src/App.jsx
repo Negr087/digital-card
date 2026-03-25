@@ -5,7 +5,7 @@ import { LightningAddress } from '@getalby/lightning-tools';
 import { nwc } from '@getalby/sdk';
 import NDK from '@nostr-dev-kit/ndk';
 import { saveCardRemote, loadCardRemote, getStorageKey } from './storage';
-import { NWCWalletManager, WalletTransfer, getDefaultNWCWallet, getNWCWallets } from './NWCWallets';
+import { NWCWalletManager, getNWCUrl } from './NWCWallets';
 
 // ── Nostr + NWC ───────────────────────────────────────────────────────────────
 
@@ -1628,11 +1628,11 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
 
   async function payWithNWC() {
     if (!invoice) return;
-    const wallet = getDefaultNWCWallet();
-    if (!wallet) { setStatus({ msg: 'No tenés NWC configurado. Editá tu tarjeta para agregarlo.', type: 'error' }); return; }
+    const nwcUrl = getNWCUrl();
+    if (!nwcUrl) { setStatus({ msg: 'No tenés NWC configurado. Editá tu tarjeta para agregarlo.', type: 'error' }); return; }
     try {
-      setStatus({ msg: `Pagando con ${wallet.name}...`, type: 'info' });
-      const client = new nwc.NWCClient({ nostrWalletConnectUrl: wallet.url });
+      setStatus({ msg: 'Pagando con NWC...', type: 'info' });
+      const client = new nwc.NWCClient({ nostrWalletConnectUrl: nwcUrl });
       await client.payInvoice({ invoice });
       paymentSuccess();
     } catch (err) {
@@ -1890,7 +1890,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
                 <button style={{ width: '100%', padding: '14px', background: '#f7931a', color: '#000', fontWeight: '700', border: 'none', borderRadius: '12px', cursor: 'pointer', fontSize: '0.95rem' }} onClick={payWithWebLN}>
                   Pagar con wallet (WebLN)
                 </button>
-                {getDefaultNWCWallet() && (
+                {getNWCUrl() && (
                   <button style={{ width: '100%', padding: '14px', background: 'rgba(247,147,26,0.12)', border: '1px solid rgba(247,147,26,0.4)', color: '#f7931a', fontWeight: '700', borderRadius: '12px', cursor: 'pointer', fontSize: '0.95rem' }} onClick={payWithNWC}>
                     Pagar con NWC
                   </button>
@@ -1926,9 +1926,6 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
             </button>
           </div>
         )}
-
-        {/* Transferencia entre wallets propias */}
-        {!data.readonly && <WalletTransfer />}
 
         {/* Share button */}
         <button
