@@ -2,11 +2,19 @@
 
 Tu tarjeta de presentación Bitcoin. Compartí tu identidad en la red Lightning con un link, un QR y pagos instantáneos.
 
-🔗 **Demo**: [digitalcard-sigma.vercel.app](https://digitalcard-sigma.vercel.app)
+🔗 **Demo**: [digitalcard-sigma.vercel.app](https://digitalcard-sigma.vercel.app) &nbsp;|&nbsp; `npm test` → 9/9 ✅
 
 ## ¿Qué es?
 
 Una tarjeta digital personal para el ecosistema Bitcoin/Lightning/Nostr. Ingresás tu Lightning Address, bio, links y la app genera una tarjeta compartible donde cualquiera te puede mandar sats al instante.
+
+**¿Por qué no un link-in-bio genérico o un perfil Nostr existente?**
+
+- Los link-in-bio (Linktree, Bento, etc.) no saben nada de Lightning — no pueden generar un invoice, no entienden de sats, no te dejan cobrar desde la misma pantalla
+- Los perfiles Nostr (Primal, Iris, etc.) están optimizados para leer/postear, no para ser compartidos como tarjeta de cobro
+- Digital Card hace exactamente una cosa: **presentarte y cobrar**, con soporte nativo para QR, WebLN, NWC y NFC (Bolt Card) en la misma pantalla
+
+El caso de uso es: alguien te pide tu dato de pago en un evento, le mandás un link, abre la tarjeta en su celular y te manda sats en 10 segundos.
 
 ## ✨ Features
 
@@ -61,6 +69,20 @@ CREATE POLICY "public_read"   ON cards FOR SELECT USING (true);
 CREATE POLICY "public_insert" ON cards FOR INSERT WITH CHECK (true);
 CREATE POLICY "public_update" ON cards FOR UPDATE USING (true);
 ```
+
+## 🔐 Privacidad de datos
+
+Digital Card separa claramente qué datos van a dónde:
+
+| Dato | Dónde se guarda | Quién puede verlo |
+|------|-----------------|-------------------|
+| Nombre, bio, avatar, links, Lightning Address | **Supabase** (público) | Cualquiera que tenga tu link |
+| NIP-05, npub | **Supabase** (público) | Cualquiera que tenga tu link |
+| URL de NWC (tu wallet) | **localStorage** (solo tu browser) | Solo vos — nunca sale de tu dispositivo |
+
+La **NWC URL contiene tu clave privada de wallet** y es el único dato sensible de la app. Nunca se sube a Supabase ni se expone en ninguna request.
+
+Los datos públicos en Supabase son accesibles con la `anon key` de Supabase (diseñada para acceso público de lectura). Si querés restringir escritura a usuarios autenticados, podés agregar Supabase Auth y ajustar las RLS policies correspondientes.
 
 ## 🏗️ Estructura
 

@@ -1,26 +1,24 @@
 {
-  "name": "lightning-starter",
+  "name": "digital-card",
   "version": "1.0.0",
-  "description": "Starter kit para Lightning Hackathons 2026 - La Crypta",
+  "description": "Tu tarjeta de presentación Bitcoin. Identidad Lightning + pagos en un solo link.",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "example:invoice": "node src/examples/create-invoice.js",
-    "example:pay": "node src/examples/pay-invoice.js",
-    "example:nwc": "node src/examples/nwc-connect.js",
-    "example:lnurl": "node src/examples/lnurl-pay.js"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [
     "lightning",
     "bitcoin",
     "nostr",
     "nwc",
-    "hackathon",
-    "lacrypta"
+    "lightning-address",
+    "digital-card"
   ],
-  "author": "La Crypta",
+  "author": "negr0",
   "license": "MIT",
   "dependencies": {
     "@getalby/lightning-tools": "^5.0.0",
@@ -34,7 +32,9 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "jsdom": "^29.0.1",
     "typescript": "^5.0.0",
-    "vite": "^5.0.0"
+    "vite": "^5.0.0",
+    "vitest": "^2.1.9"
   }
 }
