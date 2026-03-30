@@ -156,7 +156,8 @@ export default function App() {
         .then(async nostrData => {
           if (!nostrData) { setView('landing'); return; }
           const saved = await loadCardRemote(npub).catch(() => null);
-          setCardData(saved ? { ...nostrData, ...saved, readonly: true } : nostrData);
+          // Nostr-native fields always win; saved only adds app customizations
+          setCardData(saved ? { ...saved, ...nostrData, readonly: true } : nostrData);
           setView('card');
         })
         .catch(() => setView('landing'));
@@ -171,7 +172,8 @@ export default function App() {
           .then(async nostrData => {
             if (!nostrData) { setView('landing'); return; }
             const saved = await loadCardRemote(decoded).catch(() => null);
-            setCardData(saved ? { ...nostrData, ...saved, readonly: true } : nostrData);
+            // Nostr-native fields always win; saved only adds app customizations
+            setCardData(saved ? { ...saved, ...nostrData, readonly: true } : nostrData);
             setView('card');
           })
           .catch(() => setView('landing'));
@@ -186,7 +188,8 @@ export default function App() {
             if (nip05Hex) {
               const card = await fetchProfileByHexPubkey(nip05Hex);
               const saved = await loadCardRemote(card.npub).catch(() => null);
-              setCardData(saved ? { ...card, ...saved, readonly: true } : { ...card, readonly: true });
+              // Nostr-native fields always win; saved only adds app customizations
+              setCardData(saved ? { ...saved, ...card, readonly: true } : { ...card, readonly: true });
               setView('card'); return;
             }
             // Supabase
@@ -663,16 +666,23 @@ function CardForm({ onDone, onBack, initialData }) {
     if (nip46.connected && nip46.remotePubkey) {
       fetchProfileByHexPubkey(nip46.remotePubkey)
         .then(async profile => {
-          // Buscar en Supabase si ya hay una tarjeta guardada con este npub
           const saved = await loadCardRemote(profile.npub).catch(() => null);
-          if (saved) {
-            // Existe tarjeta previa → restaurar esos datos (tienen personalizaciones del usuario)
-            applyNostrProfile(saved);
-            try { localStorage.setItem('remoteCardKey', profile.npub); } catch {}
-          } else {
-            // Primera vez → usar perfil de Nostr
-            applyNostrProfile(profile);
-          }
+          // Nostr-native fields always win (fresh data); saved only contributes app customizations
+          const merged = saved ? {
+            ...saved,
+            name: profile.name,
+            bio: profile.bio,
+            lnAddress: profile.lnAddress,
+            avatarUrl: profile.avatarUrl,
+            bannerUrl: profile.bannerUrl,
+            nip05: profile.nip05,
+            nostr: profile.nostr,
+            github: profile.github || saved.github,
+            twitter: profile.twitter || saved.twitter,
+            extraLinks: profile.extraLinks?.length ? profile.extraLinks : (saved.extraLinks || []),
+          } : profile;
+          applyNostrProfile(merged);
+          if (saved) { try { localStorage.setItem('remoteCardKey', profile.npub); } catch {} }
           setNostrNpub(profile.npub);
           setNostrModal(false);
           nip46.reset();
@@ -718,12 +728,22 @@ function CardForm({ onDone, onBack, initialData }) {
       const profile = await fetchOwnNostrProfile();
       // Buscar en Supabase si ya hay tarjeta guardada con este npub
       const saved = profile.npub ? await loadCardRemote(profile.npub).catch(() => null) : null;
-      if (saved) {
-        applyNostrProfile(saved);
-        try { localStorage.setItem('remoteCardKey', profile.npub); } catch {}
-      } else {
-        applyNostrProfile(profile);
-      }
+      // Nostr-native fields always win (fresh data); saved only contributes app customizations
+      const merged = saved ? {
+        ...saved,
+        name: profile.name,
+        bio: profile.bio,
+        lnAddress: profile.lnAddress,
+        avatarUrl: profile.avatarUrl,
+        bannerUrl: profile.bannerUrl,
+        nip05: profile.nip05,
+        nostr: profile.nostr,
+        github: profile.github || saved.github,
+        twitter: profile.twitter || saved.twitter,
+        extraLinks: profile.extraLinks?.length ? profile.extraLinks : (saved.extraLinks || []),
+      } : profile;
+      applyNostrProfile(merged);
+      if (saved) { try { localStorage.setItem('remoteCardKey', profile.npub); } catch {} }
       if (profile.npub) setNostrNpub(profile.npub);
     } catch (err) {
       setNostrImportError(err.message);
