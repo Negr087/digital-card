@@ -3,7 +3,7 @@ import { useNostrConnect } from './useNostrConnect';
 import { QRCodeSVG } from 'qrcode.react';
 import { LightningAddress } from '@getalby/lightning-tools';
 import { nwc } from '@getalby/sdk';
-import NDK from '@nostr-dev-kit/ndk';
+import NDK, { NDKSubscriptionCacheUsage } from '@nostr-dev-kit/ndk';
 import { saveCardRemote, loadCardRemote, getStorageKey } from './storage';
 import { NWCWalletManager, getNWCUrl } from './NWCWallets';
 
@@ -30,7 +30,10 @@ async function getNDK() {
 async function fetchFromNostr(npub) {
   const ndk = await getNDK();
   const user = ndk.getUser({ npub });
-  const event = await ndk.fetchEvent({ kinds: [0], authors: [user.pubkey] });
+  const event = await ndk.fetchEvent(
+    { kinds: [0], authors: [user.pubkey] },
+    { cacheUsage: NDKSubscriptionCacheUsage.ONLY_RELAY },
+  );
   if (!event) return null;
   const c = JSON.parse(event.content);
   let lnCard = {};
@@ -69,7 +72,10 @@ async function fetchOwnNostrProfile() {
   const ndk = await getNDK();
   const pubkey = await window.nostr.getPublicKey();
   const user = ndk.getUser({ pubkey });
-  const event = await ndk.fetchEvent({ kinds: [0], authors: [pubkey] });
+  const event = await ndk.fetchEvent(
+    { kinds: [0], authors: [pubkey] },
+    { cacheUsage: NDKSubscriptionCacheUsage.ONLY_RELAY },
+  );
   if (!event) throw new Error('No se encontró perfil Nostr para tu clave pública.');
   const c = JSON.parse(event.content);
   let lnCard = {};
