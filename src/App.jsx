@@ -2,8 +2,6 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNostrConnect } from './useNostrConnect';
 import { QRCodeSVG } from 'qrcode.react';
 import { LightningAddress } from '@getalby/lightning-tools';
-import { nwc } from '@getalby/sdk';
-import NDK, { NDKSubscriptionCacheUsage } from '@nostr-dev-kit/ndk';
 import { saveCardRemote, loadCardRemote, getStorageKey } from './storage';
 import { NWCWalletManager, getNWCUrl } from './NWCWallets';
 
@@ -16,25 +14,34 @@ const RELAYS = [
   'wss://nostr.wine',          // nostr.wine — backup
   'wss://relay.damus.io',      // damus — a veces con issues
 ];
-let _ndk = null;
 
-async function getNDK() {
-  if (!_ndk) {
-    _ndk = new NDK({ explicitRelayUrls: RELAYS });
-    await _ndk.connect(4000); // espera hasta 4s a que al menos un relay conecte
+// NDK se carga bajo demanda (import dinámico) para no inflar el bundle inicial.
+let _ndkPromise = null;
+
+function getNDK() {
+  if (!_ndkPromise) {
+    _ndkPromise = (async () => {
+      const { default: NDK } = await import('@nostr-dev-kit/ndk');
+      const ndk = new NDK({ explicitRelayUrls: RELAYS });
+      await ndk.connect(4000); // espera hasta 4s a que al menos un relay conecte
+      return ndk;
+    })().catch(err => { _ndkPromise = null; throw err; });
   }
-  return _ndk;
+  return _ndkPromise;
 }
 
-
-async function fetchFromNostr(npub) {
+/** Trae el evento kind:0 (perfil) de un pubkey hex, directo de los relays. */
+async function fetchProfileEvent(pubkey) {
   const ndk = await getNDK();
-  const user = ndk.getUser({ npub });
-  const event = await ndk.fetchEvent(
-    { kinds: [0], authors: [user.pubkey] },
+  const { NDKSubscriptionCacheUsage } = await import('@nostr-dev-kit/ndk');
+  return ndk.fetchEvent(
+    { kinds: [0], authors: [pubkey] },
     { cacheUsage: NDKSubscriptionCacheUsage.ONLY_RELAY },
   );
-  if (!event) return null;
+}
+
+/** Convierte el contenido de un kind:0 en los campos de la tarjeta. */
+function parseProfile(event, npub) {
   const c = JSON.parse(event.content);
   let lnCard = {};
   try { lnCard = JSON.parse(c.ln_card || '{}'); } catch {}
@@ -50,8 +57,26 @@ async function fetchFromNostr(npub) {
     nostr: lnCard.nostr_profile || `https://primal.net/${npub}`,
     extraLinks: lnCard.extraLinks || [],
     npub,
-    readonly: true,
   };
+}
+
+async function fetchFromNostr(npub) {
+  const ndk = await getNDK();
+  const user = ndk.getUser({ npub });
+  const event = await fetchProfileEvent(user.pubkey);
+  if (!event) return null;
+  return { ...parseProfile(event, npub), readonly: true };
+}
+
+/** Pubkey hex de un npub, o null si es inválido. */
+async function npubToHex(npub) {
+  try {
+    const { nip19 } = await import('nostr-tools');
+    const { type, data } = nip19.decode(npub);
+    return type === 'npub' ? data : null;
+  } catch {
+    return null;
+  }
 }
 
 async function resolveNip05(identifier) {
@@ -72,27 +97,9 @@ async function fetchOwnNostrProfile() {
   const ndk = await getNDK();
   const pubkey = await window.nostr.getPublicKey();
   const user = ndk.getUser({ pubkey });
-  const event = await ndk.fetchEvent(
-    { kinds: [0], authors: [pubkey] },
-    { cacheUsage: NDKSubscriptionCacheUsage.ONLY_RELAY },
-  );
+  const event = await fetchProfileEvent(pubkey);
   if (!event) throw new Error('No se encontró perfil Nostr para tu clave pública.');
-  const c = JSON.parse(event.content);
-  let lnCard = {};
-  try { lnCard = JSON.parse(c.ln_card || '{}'); } catch {}
-  return {
-    name: c.name || c.display_name || '',
-    bio: c.about || '',
-    lnAddress: c.lud16 || '',
-    avatarUrl: c.picture || '',
-    bannerUrl: c.banner || '',
-    nip05: c.nip05 || '',
-    github: lnCard.github || '',
-    twitter: lnCard.twitter || '',
-    nostr: `https://primal.net/${user.npub}`,
-    extraLinks: lnCard.extraLinks || [],
-    npub: user.npub,
-  };
+  return { ...parseProfile(event, user.npub), nostr: `https://primal.net/${user.npub}` };
 }
 
 async function fetchProfileByHexPubkey(hexPubkey) {
@@ -230,7 +237,14 @@ export default function App() {
       try {
         const key = localStorage.getItem('remoteCardKey');
         if (key) {
-          const remote = await loadCardRemote(key);
+          let remote = await loadCardRemote(key);
+          // Supabase es editable por cualquiera: la Lightning Address (a dónde van los
+          // pagos) sale del perfil Nostr firmado o de la copia local, nunca solo del remoto.
+          if (remote && key.startsWith('npub1')) {
+            const nostrData = await fetchFromNostr(key).catch(() => null);
+            const trusted = nostrData?.lnAddress || local?.lnAddress;
+            if (trusted) remote = { ...remote, lnAddress: trusted };
+          }
           if (remote) {
             setCardData(remote);
             setOwnCard(remote);
@@ -360,7 +374,7 @@ function XIcon({ size = 16 }) {
 
 function NostrIcon({ size = 16 }) {
   return (
-    <img src="https://aqstr.com/nostr-logo.png" width={size} height={size} alt="Nostr" style={{ display: 'inline', verticalAlign: 'middle', flexShrink: 0, objectFit: 'contain' }} />
+    <img src="/nostr-logo.png" width={size} height={size} alt="Nostr" style={{ display: 'inline', verticalAlign: 'middle', flexShrink: 0, objectFit: 'contain' }} />
   );
 }
 
@@ -652,6 +666,51 @@ function Landing({ onStart, hasCard, onSearch }) {
 
 // ── Card Form ─────────────────────────────────────────────────────────────────
 
+/** Recorta al centro y escala una imagen a size×size, devuelve data URL JPEG. */
+function resizeImageToDataUrl(file, size) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      try {
+        const side = Math.min(img.width, img.height);
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        canvas.getContext('2d').drawImage(
+          img,
+          (img.width - side) / 2, (img.height - side) / 2, side, side,
+          0, 0, size, size,
+        );
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      } catch (err) {
+        reject(err);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('Imagen inválida')); };
+    img.src = objectUrl;
+  });
+}
+
+const BASE_URLS = {
+  github: 'https://github.com/',
+  nostr: 'https://primal.net/',
+  twitter: 'https://x.com/',
+  x: 'https://x.com/',
+  instagram: 'https://instagram.com/',
+  ig: 'https://instagram.com/',
+  youtube: 'https://youtube.com/@',
+  yt: 'https://youtube.com/@',
+  telegram: 'https://t.me/',
+  discord: 'https://discord.gg/',
+  dis: 'https://discord.gg/',
+};
+
+// URLs base "vacías" (sin usuario): no se muestran como link en la tarjeta.
+const BASE_URLS_SET = new Set(Object.values(BASE_URLS));
+
 function CardForm({ onDone, onBack, initialData }) {
   const fileInputRef = useRef(null);
   const [avatarUrl, setAvatarUrl] = useState(initialData?.avatarUrl || '');
@@ -752,11 +811,20 @@ function CardForm({ onDone, onBack, initialData }) {
     }
   }
 
-  function handleAvatarChange(e) {
-    const file = e.target.files[0];
-    if (!file) return;
+  const [avatarError, setAvatarError] = useState('');
 
-    setAvatarUrl(URL.createObjectURL(file));
+  async function handleAvatarChange(e) {
+    const file = e.target.files[0];
+    e.target.value = ''; // permite volver a elegir el mismo archivo
+    if (!file) return;
+    setAvatarError('');
+    try {
+      // Una URL blob: solo vive en esta pestaña. La convertimos en una data URL
+      // chica (256px JPEG) que se puede guardar en localStorage y Supabase.
+      setAvatarUrl(await resizeImageToDataUrl(file, 256));
+    } catch {
+      setAvatarError('No se pudo procesar la imagen. Probá con otra.');
+    }
   }
 
   function set(field, value) {
@@ -768,20 +836,6 @@ function CardForm({ onDone, onBack, initialData }) {
     setForm(prev => ({ ...prev, extraLinks: [...prev.extraLinks, { label: '', url: '' }] }));
   }
 
-  const BASE_URLS = {
-    github: 'https://github.com/',
-    nostr: 'https://primal.net/',
-    twitter: 'https://x.com/',
-    x: 'https://x.com/',
-    instagram: 'https://instagram.com/',
-    ig: 'https://instagram.com/',
-    youtube: 'https://youtube.com/@',
-    yt: 'https://youtube.com/@',
-    telegram: 'https://t.me/',
-    discord: 'https://discord.gg/',
-    dis: 'https://discord.gg/',
-  };
-
   function setExtraLink(index, field, value) {
     setForm(prev => {
       const current = prev.extraLinks[index];
@@ -789,7 +843,7 @@ function CardForm({ onDone, onBack, initialData }) {
       if (field === 'label') {
         const base = BASE_URLS[value.toLowerCase().trim()];
         // Auto-fill URL only if it's empty or still a known base URL
-        const urlIsEmpty = !current.url || Object.values(BASE_URLS).includes(current.url);
+        const urlIsEmpty = !current.url || BASE_URLS_SET.has(current.url);
         updated = prev.extraLinks.map((l, i) =>
           i === index ? { ...l, label: value, ...(base && urlIsEmpty ? { url: base } : {}) } : l
         );
@@ -1092,7 +1146,7 @@ function CardForm({ onDone, onBack, initialData }) {
                     }
                   </div>
                   <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleAvatarChange} />
-                  <span style={{ display: 'block', textAlign: 'center', fontSize: '0.72rem', color: 'rgba(255,255,255,0.3)', marginTop: '6px' }}>Foto (opcional)</span>
+                  <span style={{ display: 'block', textAlign: 'center', fontSize: '0.72rem', color: avatarError ? '#ff6b6b' : 'rgba(255,255,255,0.3)', marginTop: '6px' }}>{avatarError || 'Foto (opcional)'}</span>
                 </div>
               </div>
 
@@ -1424,155 +1478,209 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
   const [showShare, setShowShare] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
   const [awaitingMobileConfirm, setAwaitingMobileConfirm] = useState(false);
-  const pollRef = useRef(null);
+  const [nip05Verified, setNip05Verified] = useState(false);
+
+  // Cada invoice tiene un id de sesión. Cancelar, terminar o salir de la vista lo
+  // incrementa, así cualquier polling/callback viejo sabe que ya no tiene que actuar.
+  const sessionRef = useRef(0);
+  const timersRef = useRef(new Set());
+  const visibilityHandlerRef = useRef(null);
 
   const PRESETS = [21, 100, 500, 1000];
-  const satsAmount = customSats ? parseInt(customSats) : selectedSats;
+  const satsAmount = customSats ? parseInt(customSats, 10) : selectedSats;
 
-  const BASE_URLS_SET = new Set(['https://github.com/', 'https://primal.net/', 'https://x.com/', 'https://instagram.com/', 'https://youtube.com/@', 'https://t.me/']);
   const hasContent = (url) => url && !BASE_URLS_SET.has(url);
 
   const links = [
     hasContent(data.github) && { label: 'GitHub', url: data.github, icon: <GitHubIcon size={25} /> },
     hasContent(data.nostr) && { label: 'Nostr', url: data.nostr, icon: <NostrIcon size={25} /> },
     hasContent(data.twitter) && { label: 'X', url: data.twitter, icon: <XIcon size={25} /> },
-    ...(data.extraLinks || []).filter(l => l.label && l.url).map(l => ({ label: l.label, url: l.url, icon: getIconForLabel(l.label, 28) })),
+    ...(data.extraLinks || []).filter(l => l.label && hasContent(l.url)).map(l => ({ label: l.label, url: l.url, icon: getIconForLabel(l.label, 28) })),
   ].filter(Boolean);
 
   const initials = data.name ? data.name.charAt(0).toUpperCase() : '?';
 
+  // NIP-05: solo mostramos la tilde si el dominio confirma que apunta a este npub.
+  useEffect(() => {
+    let cancelled = false;
+    setNip05Verified(false);
+    if (!data.nip05 || !data.npub) return;
+    (async () => {
+      const [resolved, expected] = await Promise.all([resolveNip05(data.nip05), npubToHex(data.npub)]);
+      if (!cancelled && resolved && expected && resolved.toLowerCase() === expected.toLowerCase()) {
+        setNip05Verified(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [data.nip05, data.npub]);
+
+  // ── Timers / listeners pendientes ──────────────────────────────────────────
+
+  function later(fn, ms) {
+    const id = setTimeout(() => { timersRef.current.delete(id); fn(); }, ms);
+    timersRef.current.add(id);
+  }
+
+  function clearPending() {
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current.clear();
+    if (visibilityHandlerRef.current) {
+      document.removeEventListener('visibilitychange', visibilityHandlerRef.current);
+      visibilityHandlerRef.current = null;
+    }
+  }
+
+  // Al salir de la tarjeta: cortar polling, listeners y sonidos pendientes.
+  useEffect(() => () => { sessionRef.current++; clearPending(); }, []);
+
+  /** true si el LNURL-verify dice que la invoice se pagó. */
+  async function isSettled(url) {
+    if (!url) return false;
+    try {
+      const res = await fetch(url);
+      const json = await res.json();
+      return Boolean(json.settled);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Único punto donde un pago se da por terminado.
+   * verified=false → no pudimos comprobarlo (el receptor no expone LNURL-verify).
+   */
+  function finishPayment(session, { verified = true } = {}) {
+    if (session !== sessionRef.current) return; // ya terminó o se canceló
+    sessionRef.current++;
+    clearPending();
+    if (verified) playPaymentSound();
+    setStatus(verified
+      ? { msg: '¡Pago recibido! Gracias!', type: 'success' }
+      : { msg: 'Gracias! Este receptor no permite verificar el pago automáticamente.', type: 'info' });
+    setInvoice(null);
+    setVerifyUrl(null);
+    setAwaitingMobileConfirm(false);
+    later(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, verified ? 2500 : 4000);
+  }
+
+  /** Errores de WebLN/NWC: nunca se asume éxito sin verificarlo. */
+  async function handleWalletError(session, err, prefix) {
+    const errStr = String(err?.message ?? err);
+    const lower = errStr.toLowerCase();
+    if (/cancel|reject|denied/.test(lower)) {
+      setStatus({ msg: 'Pago cancelado.', type: 'error' });
+      return;
+    }
+    // Algunas wallets pagan pero fallan al devolver el preimage: lo comprobamos de verdad.
+    if (lower.includes('preimage') || lower.includes('validation')) {
+      if (verifyUrl) {
+        setStatus({ msg: 'Verificando pago...', type: 'info' });
+        if (await isSettled(verifyUrl)) { finishPayment(session); return; }
+      } else {
+        setStatus({ msg: 'Tu wallet no confirmó el pago. Si el pago salió, tocá "Ya pagué".', type: 'info' });
+        return;
+      }
+    }
+    if (session === sessionRef.current) setStatus({ msg: `${prefix}: ${errStr}`, type: 'error' });
+  }
+
+  // ── Generar invoice ────────────────────────────────────────────────────────
+
   async function generateInvoice() {
-    if (!satsAmount || satsAmount < 1) { setStatus({ msg: 'Ingresa una cantidad valida', type: 'error' }); return; }
+    if (!Number.isInteger(satsAmount) || satsAmount < 1) { setStatus({ msg: 'Ingresá una cantidad válida', type: 'error' }); return; }
+    clearPending();
+    const session = ++sessionRef.current;
     setLoading(true);
     setStatus({ msg: 'Generando invoice...', type: 'info' });
     setInvoice(null);
     try {
       const ln = new LightningAddress(data.lnAddress);
       await ln.fetch();
-      const inv = await ln.requestInvoice({ satoshi: satsAmount, comment: paymentComment || undefined });
+
+      // Solo mandamos comentario si el receptor lo acepta (LUD-12), y recortado a su límite.
+      const commentAllowed = ln.lnurlpData?.commentAllowed || 0;
+      const wanted = paymentComment.trim();
+      const comment = wanted.slice(0, commentAllowed);
+
+      const inv = await ln.requestInvoice({ satoshi: satsAmount, comment: comment || undefined });
+      if (session !== sessionRef.current) return; // canceló mientras se generaba
+
       setInvoice(inv.paymentRequest);
       setVerifyUrl(inv.verify || null);
       setAwaitingMobileConfirm(true);
-      setStatus({ msg: '', type: '' });
+      if (wanted && !comment) setStatus({ msg: 'Nota: este receptor no acepta comentarios, se envía sin mensaje.', type: 'info' });
+      else if (wanted.length > comment.length) setStatus({ msg: `Nota: el comentario se recortó a ${commentAllowed} caracteres.`, type: 'info' });
+      else setStatus({ msg: '', type: '' });
 
-      // Polling automático: detectar pago por QR
+      // Polling automático: detecta el pago aunque lo hagan escaneando el QR.
       if (inv.verify) {
-        clearTimeout(pollRef.current);
         const startTime = Date.now();
-        const pollQR = async () => {
-          if (Date.now() - startTime > 600000) return; // 10 min máximo
-          try {
-            const res = await fetch(inv.verify);
-            const vdata = await res.json();
-            if (vdata.settled) { paymentSuccess(); return; }
-          } catch {}
-          pollRef.current = setTimeout(pollQR, 3000);
+        const poll = async () => {
+          if (session !== sessionRef.current || Date.now() - startTime > 600000) return; // 10 min máximo
+          if (await isSettled(inv.verify)) { finishPayment(session); return; }
+          if (session === sessionRef.current) later(poll, 3000);
         };
-        pollRef.current = setTimeout(pollQR, 3000);
+        later(poll, 3000);
       }
     } catch (err) {
-      setStatus({ msg: 'Error: ' + err.message, type: 'error' });
+      if (session === sessionRef.current) setStatus({ msg: 'Error: ' + err.message, type: 'error' });
     } finally {
       setLoading(false);
     }
   }
 
+  // ── Métodos de pago ────────────────────────────────────────────────────────
+
   async function payWithWebLN() {
     if (!invoice) return;
+    const session = sessionRef.current;
 
     // Mobile: sin extensión WebLN → abrir picker de wallets nativas con lightning: URI
     if (!window.webln) {
       window.location.href = `lightning:${invoice}`;
       setStatus({ msg: 'Completá el pago en tu wallet...', type: 'info' });
 
-      if (verifyUrl) {
-        // Polling automático al volver a la app (visibilitychange)
-        const onVisible = async () => {
-          if (document.visibilityState !== 'visible') return;
-          document.removeEventListener('visibilitychange', onVisible);
-          clearTimeout(pollRef.current);
-
-          // Intentar hasta 5 veces cada 2s al volver
-          let attempts = 0;
-          const poll = async () => {
-            try {
-              const res = await fetch(verifyUrl);
-              const data = await res.json();
-              if (data.settled) {
-                paymentSuccess();
-                return;
-              }
-            } catch {}
-            attempts++;
-            if (attempts < 5) pollRef.current = setTimeout(poll, 2000);
-            else setAwaitingMobileConfirm(true); // fallback: mostrar botón manual
-          };
-          poll();
-        };
-        document.addEventListener('visibilitychange', onVisible);
-        // Timeout de seguridad: si no volvió en 3 min, limpiar listener
-        pollRef.current = setTimeout(() => {
-          document.removeEventListener('visibilitychange', onVisible);
-          setAwaitingMobileConfirm(true);
-        }, 180000);
-      } else {
-        // Sin verify URL: al volver de la wallet asumir que pagó
-        const onVisible = () => {
-          if (document.visibilityState !== 'visible') return;
-          document.removeEventListener('visibilitychange', onVisible);
-          paymentSuccess();
-        };
-        document.addEventListener('visibilitychange', onVisible);
-      }
+      // Al volver a la app: chequear al instante (el polling del QR sigue corriendo igual).
+      const onVisible = () => {
+        if (document.visibilityState !== 'visible') return;
+        document.removeEventListener('visibilitychange', onVisible);
+        visibilityHandlerRef.current = null;
+        if (session !== sessionRef.current) return;
+        if (verifyUrl) {
+          isSettled(verifyUrl).then(ok => { if (ok) finishPayment(session); });
+        } else {
+          setStatus({ msg: 'Si completaste el pago, tocá "Ya pagué".', type: 'info' });
+        }
+      };
+      if (visibilityHandlerRef.current) document.removeEventListener('visibilitychange', visibilityHandlerRef.current);
+      visibilityHandlerRef.current = onVisible;
+      document.addEventListener('visibilitychange', onVisible);
       return;
     }
 
     try {
       setStatus({ msg: 'Abriendo wallet...', type: 'info' });
       await window.webln.enable();
-      await window.webln.sendPayment(invoice);
-      paymentSuccess();
+      await window.webln.sendPayment(invoice); // resuelve con el preimage → pago confirmado
+      finishPayment(session);
     } catch (err) {
-      const errStr = String(err?.message ?? err);
-      // Alby y otras wallets a veces no devuelven preimage aunque el pago fue exitoso
-      if (errStr.includes('preimage') || errStr.includes('validation')) {
-        paymentSuccess();
-      } else if (errStr.toLowerCase().includes('cancel') || errStr.toLowerCase().includes('reject') || errStr.toLowerCase().includes('denied')) {
-        setStatus({ msg: 'Pago cancelado.', type: 'error' });
-      } else {
-        setStatus({ msg: err.message, type: 'error' });
-      }
+      await handleWalletError(session, err, 'Error');
     }
   }
 
-  function paymentSuccess() {
-    playPaymentSound();
-    setStatus({ msg: '¡Pago recibido! Gracias!', type: 'success' });
-    setInvoice(null);
-    setVerifyUrl(null);
-    setAwaitingMobileConfirm(false);
-    clearTimeout(pollRef.current);
-    setTimeout(() => { setShowPayment(false); setStatus({ msg: '', type: '' }); }, 2500);
-  }
-
   async function confirmMobilePayment() {
+    const session = sessionRef.current;
     if (verifyUrl) {
       // Con verify URL: comprobar antes de confirmar
       setStatus({ msg: 'Verificando pago...', type: 'info' });
-      try {
-        const res = await fetch(verifyUrl);
-        const data = await res.json();
-        if (data.settled) {
-          paymentSuccess();
-        } else {
-          setStatus({ msg: 'No detectamos el pago todavía. Esperá unos segundos y volvé a intentar.', type: 'error' });
-        }
-      } catch {
-        setStatus({ msg: 'No se pudo verificar el pago. Intentá de nuevo.', type: 'error' });
+      if (await isSettled(verifyUrl)) {
+        finishPayment(session);
+      } else if (session === sessionRef.current) {
+        setStatus({ msg: 'No detectamos el pago todavía. Esperá unos segundos y volvé a intentar.', type: 'error' });
       }
     } else {
-      // Sin verify URL: no hay forma de verificar automáticamente, confiar en el usuario
-      paymentSuccess();
+      // Sin verify URL no hay forma de comprobarlo: cerramos, pero sin decir "recibido".
+      finishPayment(session, { verified: false });
     }
   }
 
@@ -1583,6 +1691,7 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
       return;
     }
 
+    const session = sessionRef.current;
     const abortController = new AbortController();
 
     try {
@@ -1597,15 +1706,12 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
 
       ndef.onreading = async (event) => {
         abortController.abort(); // dejar de escanear tras primera lectura
+        if (session !== sessionRef.current) return;
 
         // Extraer URL del tag NFC
         let tagUrl = '';
         for (const record of event.message.records) {
-          if (record.recordType === 'url') {
-            tagUrl = new TextDecoder().decode(record.data);
-            break;
-          }
-          if (record.recordType === 'text') {
+          if (record.recordType === 'url' || record.recordType === 'text') {
             tagUrl = new TextDecoder().decode(record.data);
             break;
           }
@@ -1632,11 +1738,11 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
           // Enviar el invoice al callback de la tarjeta
           setStatus({ msg: 'Enviando pago desde la tarjeta...', type: 'info' });
           const sep = data.callback.includes('?') ? '&' : '?';
-          const callbackRes = await fetch(`${data.callback}${sep}k1=${data.k1}&pr=${invoice}`);
+          const callbackRes = await fetch(`${data.callback}${sep}k1=${encodeURIComponent(data.k1)}&pr=${encodeURIComponent(invoice)}`);
           const callbackData = await callbackRes.json();
 
           if (callbackData.status === 'OK') {
-            paymentSuccess();
+            finishPayment(session);
           } else {
             setStatus({ msg: `Error de la tarjeta: ${callbackData.reason || 'desconocido'}`, type: 'error' });
           }
@@ -1656,19 +1762,18 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
     if (!invoice) return;
     const nwcUrl = getNWCUrl();
     if (!nwcUrl) { setStatus({ msg: 'No tenés NWC configurado. Editá tu tarjeta para agregarlo.', type: 'error' }); return; }
+    const session = sessionRef.current;
+    let client;
     try {
       setStatus({ msg: 'Pagando con NWC...', type: 'info' });
-      const client = new nwc.NWCClient({ nostrWalletConnectUrl: nwcUrl });
+      const { nwc } = await import('@getalby/sdk'); // se carga solo si se usa
+      client = new nwc.NWCClient({ nostrWalletConnectUrl: nwcUrl });
       await client.payInvoice({ invoice });
-      paymentSuccess();
+      finishPayment(session);
     } catch (err) {
-      const errStr = String(err?.message ?? err);
-      // Algunas wallets devuelven preimage vacío aunque el pago fue exitoso
-      if (errStr.includes('preimage') || errStr.includes('validation')) {
-        paymentSuccess();
-      } else {
-        setStatus({ msg: 'Error NWC: ' + errStr, type: 'error' });
-      }
+      await handleWalletError(session, err, 'Error NWC');
+    } finally {
+      client?.close(); // cerrar el websocket con el relay
     }
   }
 
@@ -1679,14 +1784,16 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
   }
 
   function reset() {
+    sessionRef.current++; // invalida polling/callbacks de la invoice actual
+    clearPending();
     setShowPayment(false);
     setInvoice(null);
     setVerifyUrl(null);
     setStatus({ msg: '', type: '' });
     setCustomSats('');
     setSelectedSats(21);
+    setPaymentComment('');
     setAwaitingMobileConfirm(false);
-    clearTimeout(pollRef.current);
   }
 
   function getShareUrl() {
@@ -1803,8 +1910,11 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
         <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <h1 style={{ fontSize: '1.8rem', fontWeight: '700', letterSpacing: '-0.5px', margin: '0' }}>{data.name}</h1>
           {data.nip05 && (
-            <span style={{ fontSize: '0.78rem', color: '#a78bfa', fontFamily: 'monospace', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0 }}><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <span
+              title={nip05Verified ? 'NIP-05 verificado' : 'NIP-05 no verificado'}
+              style={{ fontSize: '0.78rem', color: nip05Verified ? '#a78bfa' : 'rgba(255,255,255,0.35)', fontFamily: 'monospace', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
+            >
+              {nip05Verified && <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0 }}><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>}
               {data.nip05}
             </span>
           )}
@@ -1821,8 +1931,8 @@ function CardView({ data, onEdit, onBack, onSearch, onHome }) {
         {/* Links */}
         {links.length > 0 && (
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
-            {links.map(link => (
-              <a key={link.label} href={link.url} target="_blank" rel="noopener noreferrer" style={{
+            {links.map((link, i) => (
+              <a key={`${link.label}-${i}`} href={link.url} target="_blank" rel="noopener noreferrer" style={{
                 padding: '8px 16px', background: 'rgba(255,255,255,0.06)',
                 border: '1px solid rgba(255,255,255,0.1)', borderRadius: '20px',
                 color: '#fff', textDecoration: 'none', fontSize: '0.85rem',

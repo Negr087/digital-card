@@ -28,3 +28,29 @@ describe('getStorageKey', () => {
     expect(getStorageKey(card)).toBe('npub1xyz');
   });
 });
+
+import { isCardConsistent } from './storage.js';
+
+describe('isCardConsistent', () => {
+  it('acepta una tarjeta cuya lnAddress coincide con la clave', () => {
+    expect(isCardConsistent('user@domain.com', { lnAddress: 'User@Domain.com' })).toBe(true);
+  });
+
+  it('rechaza una tarjeta con lnAddress distinta (intento de desviar pagos)', () => {
+    expect(isCardConsistent('victima@blink.sv', { lnAddress: 'atacante@evil.com' })).toBe(false);
+  });
+
+  it('acepta una tarjeta cuyo npub coincide con la clave', () => {
+    expect(isCardConsistent('npub1abc', { npub: 'npub1abc', lnAddress: 'x@y.com' })).toBe(true);
+  });
+
+  it('rechaza una fila con npub ajeno bajo una clave de lightning address', () => {
+    expect(isCardConsistent('victima@blink.sv', { npub: 'npub1otro', lnAddress: 'victima@blink.sv' })).toBe(false);
+  });
+
+  it('rechaza datos vacíos o inválidos', () => {
+    expect(isCardConsistent('a@b.com', null)).toBe(false);
+    expect(isCardConsistent(null, { lnAddress: 'a@b.com' })).toBe(false);
+    expect(isCardConsistent('a@b.com', 'texto')).toBe(false);
+  });
+});

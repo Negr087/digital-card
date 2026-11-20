@@ -2,7 +2,7 @@
 
 Tu tarjeta de presentación Bitcoin. Compartí tu identidad en la red Lightning con un link, un QR y pagos instantáneos.
 
-🔗 **Demo**: [digitalcard-sigma.vercel.app](https://digitalcard-sigma.vercel.app) &nbsp;|&nbsp; `npm test` → 9/9 ✅
+🔗 **Demo**: [digitalcard-sigma.vercel.app](https://digitalcard-sigma.vercel.app) &nbsp;|&nbsp; `npm test` → 18/18 ✅
 
 ## ¿Qué es?
 
@@ -25,6 +25,8 @@ El caso de uso es: alguien te pide tu dato de pago en un evento, le mandás un l
 - **Links sociales** — GitHub, X, Nostr, Instagram, YouTube, Telegram, Discord y más
 - **Persistencia cross-device** — datos guardados en Supabase, sincronizados entre PC y celular
 - **Compartir** — link corto, QR y botones para WhatsApp, X y Telegram
+- **Pagos verificados** — el éxito se confirma con LNURL-verify; si el receptor no lo soporta, la app lo dice en vez de asumir que se pagó
+- **NIP-05 verificado** — la tilde solo aparece si el dominio confirma que apunta a ese npub
 - **Sonidos** — efectos de sonido aleatorios al confirmar un pago
 
 ## 🚀 Inicio rápido
@@ -82,7 +84,16 @@ Digital Card separa claramente qué datos van a dónde:
 
 La **NWC URL contiene tu clave privada de wallet** y es el único dato sensible de la app. Nunca se sube a Supabase ni se expone en ninguna request.
 
-Los datos públicos en Supabase son accesibles con la `anon key` de Supabase (diseñada para acceso público de lectura). Si querés restringir escritura a usuarios autenticados, podés agregar Supabase Auth y ajustar las RLS policies correspondientes.
+Los datos públicos en Supabase son accesibles con la `anon key` de Supabase (diseñada para acceso público de lectura).
+
+### ⚠️ Límite conocido: escritura pública
+
+Con las policies de arriba **cualquiera puede escribir cualquier fila**. Para que nadie pueda desviar pagos poniendo su Lightning Address en la tarjeta de otro, la app aplica estas defensas del lado del cliente:
+
+- Una fila solo se acepta si su clave coincide con el contenido (`id = "ana@blink.sv"` exige `data.lnAddress = "ana@blink.sv"`); si no, se descarta.
+- En las tarjetas con npub, la Lightning Address sale siempre del perfil Nostr firmado (`lud16`) o de la copia local, nunca solo de Supabase.
+
+Igual, alguien podría cambiar la bio o los links de una tarjeta ajena. La solución de fondo es exigir una firma en cada escritura (un evento Nostr firmado verificado en una Edge Function, o Supabase Auth) y restringir las policies de `INSERT`/`UPDATE`.
 
 ## 🏗️ Estructura
 
@@ -90,11 +101,15 @@ Los datos públicos en Supabase son accesibles con la `anon key` de Supabase (di
 digital-card/
 ├── public/
 │   ├── sounds/          # Efectos de sonido para pagos
-│   └── satoshi.webp     # Avatar del mockup
+│   ├── satoshi.webp     # Avatar del mockup
+│   ├── nostr-logo.png   # Ícono de Nostr (local, sin depender de terceros)
+│   └── og-image.png     # Vista previa al compartir el link
 ├── src/
 │   ├── App.jsx          # Toda la app (Landing, CardForm, CardView, SearchView)
-│   ├── storage.js       # Helpers para Supabase (save/load tarjeta)
-│   ├── useNostrConnect.js  # Hook NIP-46 para conectar wallet móvil
+│   ├── NWCWallets.jsx   # Configuración de NWC (guardada solo en localStorage)
+│   ├── storage.js       # Helpers para Supabase (save/load + validación de tarjetas)
+│   ├── useNostrConnect.js  # Hook NIP-46 para login con Primal/Amber
+│   ├── *.test.js(x)     # Tests (vitest): storage, NWC y smoke de la app
 │   └── main.jsx
 ├── .env.example
 └── package.json
@@ -121,7 +136,8 @@ digital-card/
 - [React](https://react.dev) + [Vite](https://vitejs.dev)
 - [@getalby/lightning-tools](https://github.com/getAlby/lightning-tools) — Lightning Address, LNURL
 - [@getalby/sdk](https://github.com/getAlby/js-sdk) — NWC
-- [@nostr-dev-kit/ndk](https://github.com/nostr-dev-kit/ndk) — Nostr / NIP-46
+- [@nostr-dev-kit/ndk](https://github.com/nostr-dev-kit/ndk) — lectura de perfiles Nostr
+- [nostr-tools](https://github.com/nbd-wtf/nostr-tools) — NIP-46 (remote signer), NIP-44, nip19
 - [Supabase](https://supabase.com) — persistencia cross-device
 - [qrcode.react](https://github.com/zpao/qrcode.react) — generación de QR
 
